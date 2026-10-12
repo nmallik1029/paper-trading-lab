@@ -1,0 +1,67 @@
+name: Dashboard
+
+on:
+  schedule:
+    - cron: "50 13-21 * * 1-5"  # hourly through the trading day (UTC), plus after the close
+    - cron: "0 12 * * 6"        # once on Saturday, after the week's final numbers settle
+  workflow_run:
+    workflows: ["Day trader", "Monthly rebalance"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # the safety net may commit a log entry
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
+      MODERATE_SECRET_KEY: ${{ secrets.MODERATE_SECRET_KEY }}
+      SAFE_API_KEY: ${{ secrets.SAFE_API_KEY }}
+      SAFE_SECRET_KEY: ${{ secrets.SAFE_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - id: month
+        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4  # read-only: the trading jobs keep it fresh
+        with:
+          path: data
+          key: monthly-data-${{ steps.month.outputs.ym }}
+          restore-keys: monthly-data-
+      - run: |
+          git config user.name "paper-trading-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # Near the close: if the day trader still holds something and its session died, sell.
+      - run: python live.py safety
+      - run: git pull -q  # pick up any logs committed in the meantime
+      - run: python dashboard.py
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

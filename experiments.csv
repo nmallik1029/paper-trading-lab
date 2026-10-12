@@ -1,0 +1,8 @@
+first_tried,config
+2026-10-12,ML moderate | ridge | top 3 | features v1
+2026-10-12,ML safe | ridge | top 3 | 200-day crash filter | features v1
+2026-10-12,ML moderate | gbm | top 3 | features v1
+2026-10-12,ML safe | gbm | top 3 | 200-day crash filter | features v1
+2026-10-12,Day trader | ridge | SPY+QQQ 30-min blocks | enter above round-trip cost | features intraday-v1
+2026-10-12,Day trader | gbm | SPY+QQQ 30-min blocks | enter above round-trip cost | features intraday-v1
+2026-10-12,"Day trader | ridge | learns from scratch: 5-day seed, retrained daily, never forgets | SPY+QQQ 30-min blocks | features intraday-v1"

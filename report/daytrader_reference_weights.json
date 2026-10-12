@@ -1,0 +1,31 @@
+{
+ "trained_before": "2026-10-01",
+ "weights": {
+  "ret_5m": -0.5702,
+  "ret_15m": 0.4821,
+  "ret_30m": -0.1794,
+  "ret_since_open": 0.4536,
+  "gap": 0.599,
+  "ret_prev_day": -0.4942,
+  "ret_prev_5d": 0.2034,
+  "vol_30m": 0.5008,
+  "vol_prev_day": -0.002,
+  "rel_volume_30m": -0.1862,
+  "time_of_day": 0.0778,
+  "is_qqq": -0.0699
+ },
+ "names": {
+  "ret_5m": "Return, last 5 minutes",
+  "ret_15m": "Return, last 15 minutes",
+  "ret_30m": "Return, last 30 minutes",
+  "ret_since_open": "Return since today's open",
+  "gap": "Overnight gap (today's open vs yesterday's close)",
+  "ret_prev_day": "Yesterday's return",
+  "ret_prev_5d": "Return over the previous 5 days",
+  "vol_30m": "Volatility, last 30 minutes",
+  "vol_prev_day": "Volatility, yesterday",
+  "rel_volume_30m": "Volume, last 30 min vs usual for this time",
+  "time_of_day": "Time of day (block 1-12)",
+  "is_qqq": "QQQ rather than SPY"
+ }
+}

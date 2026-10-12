@@ -1,0 +1,46 @@
+name: Monthly rebalance
+
+on:
+  schedule:
+    # Times are UTC: 15:45 New York time under EDT and under EST. Whichever run lands
+    # outside market hours exits; once a month's signal is traded, later runs do nothing.
+    - cron: "45 19 * * 1-5"
+    - cron: "45 20 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: monthly
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # to commit the trade logs
+
+jobs:
+  rebalance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
+      MODERATE_SECRET_KEY: ${{ secrets.MODERATE_SECRET_KEY }}
+      SAFE_API_KEY: ${{ secrets.SAFE_API_KEY }}
+      SAFE_SECRET_KEY: ${{ secrets.SAFE_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - id: month
+        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: data
+          key: monthly-data-${{ steps.month.outputs.ym }}
+          restore-keys: monthly-data-
+      - run: |
+          git config user.name "paper-trading-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - run: python live.py monthly
