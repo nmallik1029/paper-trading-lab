@@ -1,0 +1,4 @@
+{"time": "2026-10-12T14:23:46-04:00", "action": "buy", "symbol": "XLB", "qty": 6.693440968, "price": 49.55, "dollars": 331.66, "why": "monthly rebalance, 2026-09-30 signal"}
+{"time": "2026-10-12T14:23:49-04:00", "action": "buy", "symbol": "XLE", "qty": 5.025151515, "price": 66.0, "dollars": 331.66, "why": "monthly rebalance, 2026-09-30 signal"}
+{"time": "2026-10-12T14:23:52-04:00", "action": "buy", "symbol": "XLP", "qty": 3.940826996, "price": 84.16, "dollars": 331.66, "why": "monthly rebalance, 2026-09-30 signal"}
+{"time": "2026-10-12T14:23:52-04:00", "action": "rebalanced", "signal_date": "2026-09-30", "target": {"XLB": 0.3333, "XLE": 0.3333, "XLP": 0.3333}, "equity": 999.81}
