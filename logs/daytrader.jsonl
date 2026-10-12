@@ -2,3 +2,4 @@
 {"time": "2026-10-12T14:23:33-04:00", "action": "skipped", "decision": "14:00", "why": "run started late"}
 {"time": "2026-10-12T14:30:16-04:00", "action": "buy", "symbol": "QQQ", "qty": 1.334432183, "price": 745.628, "dollars": 994.99, "why": "14:30 decision"}
 {"time": "2026-10-12T14:30:16-04:00", "action": "decision", "decision": "14:30", "predicted_bps": {"SPY": 11.52, "QQQ": 30.52}, "before": "cash", "after": "QQQ", "dry_run": false}
+{"time": "2026-10-12T15:00:17-04:00", "action": "decision", "decision": "15:00", "predicted_bps": {"SPY": 10.17, "QQQ": 31.07}, "before": "QQQ", "after": "QQQ", "dry_run": false}
