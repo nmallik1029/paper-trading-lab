@@ -4,3 +4,5 @@
 {"time": "2026-10-12T14:30:16-04:00", "action": "decision", "decision": "14:30", "predicted_bps": {"SPY": 11.52, "QQQ": 30.52}, "before": "cash", "after": "QQQ", "dry_run": false}
 {"time": "2026-10-12T15:00:17-04:00", "action": "decision", "decision": "15:00", "predicted_bps": {"SPY": 10.17, "QQQ": 31.07}, "before": "QQQ", "after": "QQQ", "dry_run": false}
 {"time": "2026-10-12T15:30:16-04:00", "action": "decision", "decision": "15:30", "predicted_bps": {"SPY": 12.54, "QQQ": 17.84}, "before": "QQQ", "after": "QQQ", "dry_run": false}
+{"time": "2026-10-12T15:57:01-04:00", "action": "sell", "symbol": "QQQ", "qty": 1.334432183, "price": 745.89, "dollars": 995.34, "why": "end of day: never hold overnight"}
+{"time": "2026-10-12T15:57:01-04:00", "action": "day closed", "equity": 1000.35}
