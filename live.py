@@ -40,6 +40,7 @@ SMALL_TRADE = 0.02    # skip rebalancing trades under 2% of the account (entries
 LATE = pd.Timedelta(minutes=5)       # skip a day-trader decision if we reach it later than this
 AFTERNOON = pd.Timedelta(hours=13, minutes=15)  # decisions from 13:15 belong to the afternoon run
 CLOSE_OUT = pd.Timedelta(minutes=3)  # the day trader sells everything this long before the close
+REBALANCE_BEFORE_CLOSE = pd.Timedelta(minutes=20)  # the daily accounts rebalance at 15:40
 
 # The five daily sleeves both daily accounts hold, and what each one trades.
 TREND, SHORT_VOL, OVERNIGHT, DIP, CRYPTO = (
@@ -219,9 +220,14 @@ def instrument_targets(budgets, signals):
 
 
 def daily(dry_run):
-    if not dry_run and not trading_client("moderate").get_clock().is_open:
-        print("market is closed; nothing to do")
-        return
+    if not dry_run:
+        clock = trading_client("moderate").get_clock()
+        if not clock.is_open:
+            print("market is closed; nothing to do")
+            return
+        if pd.Timestamp(clock.next_close).tz_convert(TZ) - now_et() < pd.Timedelta(minutes=5):
+            print("too close to the close to rebalance safely; skipping")
+            return
     today = now_et().normalize().tz_localize(None)
     R, T, rf = sleeve_inputs()
     if R.index[-1] != today and not dry_run:
@@ -369,6 +375,14 @@ def daytrader(session, dry_run):
         persist(f"daytrader: {t:%H:%M} decision")
 
     if i_close:
+        # The run that closes out the day also does the daily accounts' rebalance 20 minutes
+        # before the close, so it doesn't depend on a separate alarm firing.
+        sleep_until(close - REBALANCE_BEFORE_CLOSE)
+        try:
+            daily(dry_run)
+        except Exception as e:  # never let it get in the way of the close-out
+            log("moderate", action="error", error=f"daily rebalance failed: {str(e)[:300]}")
+            persist("daily rebalance failed")
         sleep_until(close_out)
         for sym in holdings(client):
             trade(client, "daytrader", sym, "sell", everything=True, dry_run=dry_run,

@@ -1,14 +1,16 @@
 name: Daily rebalance
 
-# Started by cron-job.org (15:40 New York time, weekdays) through the GitHub API. It
-# rebalances the multi-strategy fund and the learning allocator using the latest prices as
-# today's close, and exits outside market hours. (The file keeps its old name because the
-# cron-job.org alarm points at it.) GitHub's own schedule isn't used: it can fire hours late.
+# Backup trigger for the daily rebalance of the multi-strategy fund and the learning
+# allocator. The afternoon day-trader run normally does it at 15:40 itself (live.py); this
+# workflow, started by cron-job.org at 15:40, only does something if that didn't happen.
+# (The file keeps its old name because the cron-job.org alarm points at it.)
 on:
   workflow_dispatch:
 
+# Shares the day trader's group, so it waits until that run is done: the two can never
+# rebalance at the same moment, and by then the rebalance is logged and this one skips it.
 concurrency:
-  group: daily
+  group: daytrader
   cancel-in-progress: false
 
 permissions:
