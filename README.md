@@ -33,8 +33,8 @@ late, so only the dashboard keeps one, as a harmless backup.)
 | cron-job.org alarm (weekdays) | Workflow | Does |
 |---|---|---|
 | 9:20 | `daytrader.yml`, session morning | unwind the overnight TQQQ at the open, then day-trade until 13:00 |
-| 13:05 | `daytrader.yml`, session afternoon | day-trade 13:30–15:30, sell everything at 15:57 |
-| 15:40 | `monthly.yml` ("Daily rebalance") | rebalance the fund and the learner |
+| 13:05 | `daytrader.yml`, session afternoon | day-trade 13:30–15:30, rebalance the fund and the learner at 15:40, sell the day trader out at 15:57 |
+| 15:40 | `monthly.yml` ("Daily rebalance") | backup only: waits for the afternoon run, then skips the already-logged rebalance |
 | :50 past each hour 10–16 | `dashboard.yml` | rebuild the dashboard; sell the day trader's position if its session died |
 
 Every decision is logged to `logs/<account>.jsonl` and committed.
