@@ -7,3 +7,4 @@
 {"time": "2026-10-12T15:57:01-04:00", "action": "sell", "symbol": "QQQ", "qty": 1.334432183, "price": 745.89, "dollars": 995.34, "why": "end of day: never hold overnight"}
 {"time": "2026-10-12T15:57:01-04:00", "action": "day closed", "equity": 1000.35}
 {"time": "2026-10-13T10:00:15-04:00", "action": "decision", "decision": "10:00", "strategy": "noise-area", "qqq": 743.7, "upper": 747.84, "lower": 737.64, "vwap": 742.13, "before": "cash", "after": "cash", "dry_run": false}
+{"time": "2026-10-13T10:30:15-04:00", "action": "decision", "decision": "10:30", "strategy": "noise-area", "qqq": 742.68, "upper": 748.97, "lower": 736.51, "vwap": 742.53, "before": "cash", "after": "cash", "dry_run": false}
