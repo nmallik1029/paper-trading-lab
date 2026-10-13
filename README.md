@@ -60,9 +60,13 @@ Three Alpaca paper accounts, $1,000 each, trade automatically on GitHub Actions:
 
 | Strategy | Account (.env prefix) | Runs |
 |---|---|---|
-| ML safe | `SAFE_` | daily at 15:45 ET; trades when a new month's signal is ready |
+| ML safe | `SAFE_` | daily at 15:40 ET; trades when a new month's signal is ready |
 | ML moderate | `MODERATE_` | same |
-| ML day trader | `ALPACA_` | retrains at ~9:25 ET; decides every 30 min from 10:00 to 15:30 ET; sells everything by the close |
+| ML day trader | `ALPACA_` | starts at 9:20 ET and retrains; decides every 30 min from 10:00 to 15:30 ET; sells everything by the close |
+
+The trading runs are started by cron-job.org through GitHub's API (a fine-grained token
+limited to starting Actions runs in this repo), because GitHub's own scheduled runs can
+fire hours late. The dashboard also keeps a GitHub schedule as a harmless backup.
 
 The dashboard (`dashboard.py`, published to GitHub Pages) rebuilds hourly and after every
 trading run. Every decision is logged to `logs/<account>.jsonl`, and the day trader's

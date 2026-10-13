@@ -1,13 +1,9 @@
 name: Day trader
 
+# Started by cron-job.org (9:20 and 13:05 New York time, weekdays) through the GitHub API.
+# GitHub's own schedule isn't used: its runs can fire hours late, and a late run would hold
+# up the real one, since only one day-trader run can go at a time.
 on:
-  schedule:
-    # Times are UTC. Each session is listed twice so it starts on time under both EDT and
-    # EST; the extra run finds every decision already logged and exits.
-    - cron: "25 13 * * 1-5"  # morning: 9:25 EDT / 8:25 EST
-    - cron: "25 14 * * 1-5"  # morning: 9:25 EST
-    - cron: "5 17 * * 1-5"   # afternoon: 13:05 EDT / 12:05 EST
-    - cron: "5 18 * * 1-5"   # afternoon: 13:05 EST
   workflow_dispatch:
     inputs:
       session:
@@ -48,12 +44,7 @@ jobs:
           key: daytrader-data-${{ steps.month.outputs.ym }}
           restore-keys: daytrader-data-
       - id: session
-        run: |
-          case "${{ github.event.schedule }}" in
-            "25 13 * * 1-5"|"25 14 * * 1-5") echo "name=morning" >> "$GITHUB_OUTPUT" ;;
-            "5 17 * * 1-5"|"5 18 * * 1-5") echo "name=afternoon" >> "$GITHUB_OUTPUT" ;;
-            *) echo "name=${{ inputs.session }}" >> "$GITHUB_OUTPUT" ;;
-          esac
+        run: echo "name=${{ inputs.session }}" >> "$GITHUB_OUTPUT"
       - run: |
           git config user.name "paper-trading-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

@@ -1,11 +1,9 @@
 name: Monthly rebalance
 
+# Started by cron-job.org (15:40 New York time, weekdays) through the GitHub API. It
+# exits outside market hours, and once a month's signal is traded, later runs do nothing.
+# GitHub's own schedule isn't used: its runs can fire hours late.
 on:
-  schedule:
-    # Times are UTC: 15:45 New York time under EDT and under EST. Whichever run lands
-    # outside market hours exits; once a month's signal is traded, later runs do nothing.
-    - cron: "45 19 * * 1-5"
-    - cron: "45 20 * * 1-5"
   workflow_dispatch:
 
 concurrency:
