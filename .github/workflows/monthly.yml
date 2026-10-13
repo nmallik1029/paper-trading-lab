@@ -1,13 +1,14 @@
-name: Monthly rebalance
+name: Daily rebalance
 
 # Started by cron-job.org (15:40 New York time, weekdays) through the GitHub API. It
-# exits outside market hours, and once a month's signal is traded, later runs do nothing.
-# GitHub's own schedule isn't used: its runs can fire hours late.
+# rebalances the multi-strategy fund and the learning allocator using the latest prices as
+# today's close, and exits outside market hours. (The file keeps its old name because the
+# cron-job.org alarm points at it.) GitHub's own schedule isn't used: it can fire hours late.
 on:
   workflow_dispatch:
 
 concurrency:
-  group: monthly
+  group: daily
   cancel-in-progress: false
 
 permissions:
@@ -15,9 +16,11 @@ permissions:
 
 jobs:
   rebalance:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
       MODERATE_SECRET_KEY: ${{ secrets.MODERATE_SECRET_KEY }}
       SAFE_API_KEY: ${{ secrets.SAFE_API_KEY }}
@@ -36,9 +39,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: data
-          key: monthly-data-${{ steps.month.outputs.ym }}
-          restore-keys: monthly-data-
+          key: daily-data-${{ steps.month.outputs.ym }}
+          restore-keys: daily-data-
       - run: |
           git config user.name "paper-trading-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      - run: python live.py monthly
+      - run: python live.py daily

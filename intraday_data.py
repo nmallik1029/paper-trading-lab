@@ -16,12 +16,15 @@ SLOTS = 78  # 5-minute bars from 9:30 to 16:00
 CACHE = Path(__file__).parent / "data" / "bars_5min.csv.gz"
 
 
-def load_bars(refresh=False, start="2016-01-01"):
+def load_bars(refresh=False, start="2016-01-01", symbols=None, name=None):
     """Return 5-minute bars (symbol, timestamp in New York time, open/high/low/close/volume).
-    Downloads complete days only (through yesterday) and caches them."""
-    if refresh or not CACHE.exists():
+    Downloads complete days only (through yesterday) and caches them. By default this is
+    SPY and QQQ; pass `symbols` and a cache `name` for others."""
+    symbols = symbols or SYMBOLS
+    cache = CACHE if name is None else CACHE.with_name(f"bars_5min_{name}.csv.gz")
+    if refresh or not cache.exists():
         today = pd.Timestamp.now(tz=TZ).normalize()
-        req = StockBarsRequest(symbol_or_symbols=SYMBOLS, timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+        req = StockBarsRequest(symbol_or_symbols=symbols, timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                                start=pd.Timestamp(start, tz=TZ).to_pydatetime(),
                                end=today.to_pydatetime(), feed=DataFeed.SIP,
                                adjustment=Adjustment.SPLIT)
@@ -29,9 +32,9 @@ def load_bars(refresh=False, start="2016-01-01"):
         df["timestamp"] = df["timestamp"].dt.tz_convert(TZ)
         minutes = df["timestamp"].dt.hour * 60 + df["timestamp"].dt.minute
         df = df[(minutes >= 9 * 60 + 30) & (minutes < 16 * 60)]
-        CACHE.parent.mkdir(exist_ok=True)
-        df[["symbol", "timestamp", "open", "high", "low", "close", "volume"]].to_csv(CACHE, index=False)
-    df = pd.read_csv(CACHE)
+        cache.parent.mkdir(exist_ok=True)
+        df[["symbol", "timestamp", "open", "high", "low", "close", "volume"]].to_csv(cache, index=False)
+    df = pd.read_csv(cache)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(TZ)
     return session_only(df, refresh=refresh)
 
@@ -72,7 +75,7 @@ def panels(bars):
     out = {}
     for sym, g in bars.groupby("symbol"):
         out[sym] = {f: g.pivot(index="date", columns="slot", values=f)
-                    .reindex(columns=range(SLOTS)) for f in ("open", "close", "volume")}
+                    .reindex(columns=range(SLOTS)) for f in ("open", "high", "low", "close", "volume")}
         for f in out[sym]:
             out[sym][f].index = pd.DatetimeIndex(out[sym][f].index)
     return out

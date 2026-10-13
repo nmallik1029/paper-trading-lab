@@ -22,11 +22,15 @@ permissions:
 
 jobs:
   trade:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
+      MODERATE_SECRET_KEY: ${{ secrets.MODERATE_SECRET_KEY }}
+      SAFE_API_KEY: ${{ secrets.SAFE_API_KEY }}
+      SAFE_SECRET_KEY: ${{ secrets.SAFE_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,19 +40,15 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - id: month
-        run: echo "ym=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: data
-          key: daytrader-data-${{ steps.month.outputs.ym }}
-          restore-keys: daytrader-data-
-      - id: session
-        run: echo "name=${{ inputs.session }}" >> "$GITHUB_OUTPUT"
       - run: |
           git config user.name "paper-trading-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      - run: python live.py daytrader --session ${{ steps.session.outputs.name }}
+      # At the open, the two daily accounts sell the TQQQ their overnight sleeve bought.
+      # If this fails, the day trader still runs.
+      - if: inputs.session == 'morning'
+        continue-on-error: true
+        run: python live.py unwind
+      - run: python live.py daytrader --session ${{ inputs.session }}
       # If the session crashed after the close-out time, make sure nothing is held overnight.
-      - if: failure() && steps.session.outputs.name == 'afternoon'
+      - if: failure() && inputs.session == 'afternoon'
         run: python live.py safety

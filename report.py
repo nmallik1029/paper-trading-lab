@@ -61,7 +61,7 @@ def _spread(values, min_gap):
     return out
 
 
-def growth_chart(results, colors, cost_bps):
+def growth_chart(results, colors, cost_bps, title=None):
     fig, ax = plt.subplots(figsize=(9, 4.6))
     _style(ax)
     ends = {}
@@ -84,7 +84,7 @@ def growth_chart(results, colors, cost_bps):
 
     ax.legend(frameon=False, loc="upper left", labelcolor=INK_2)
     unit = "bp" if cost_bps == 1 else "bps"
-    ax.set_title(f"Growth of $100 (log scale, after {cost_bps:g} {unit} trading costs)", loc="left")
+    ax.set_title(title or f"Growth of $100 (log scale, after {cost_bps:g} {unit} trading costs)", loc="left")
     return fig
 
 

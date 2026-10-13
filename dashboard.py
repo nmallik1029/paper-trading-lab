@@ -16,28 +16,38 @@ from alpaca.trading.requests import GetPortfolioHistoryRequest
 from broker import data_client, trading_client
 from data import load_prices
 from intraday_data import TZ, market_calendar
-from live import read_log
+from live import LAUNCH_V2, SLEEVES, read_log
 
 ROOT = Path(__file__).parent
 SITE = ROOT / "site"
 START_VALUE = 1000.0
 
-# Display order runs from least to most risky; colors are categorical slots 1-3 in order.
+# Colors are categorical slots 1-3, in this order.
 STRATEGIES = {
-    "safe": dict(name="ML safe", risk="Safe", slot=1, report=("ml_dev", "ML safe"),
-                 about="Holds the 3 sectors the model ranks best; moves to cash when the market "
-                       "is in a downtrend. Rebalances monthly."),
-    "moderate": dict(name="ML moderate", risk="Moderate", slot=2, report=("ml_dev", "ML moderate"),
-                     about="Holds the 3 sectors the model ranks best, always invested. "
-                           "Rebalances monthly."),
-    "daytrader": dict(name="ML day trader", risk="Ultra risky", slot=3,
-                      report=("coldstart", "Day trader, from scratch"),
-                      about="Learns from scratch: it started out knowing only the 5 trading days "
-                            "before launch and retrains every morning on everything since. Every "
-                            "30 minutes it buys SPY or QQQ when its predicted gain beats trading "
-                            "costs, and it sells everything by the close."),
+    "moderate": dict(name="Multi-strategy fund", risk="Aggressive", slot=1, band="fund",
+                     about="Five unrelated strategies with 20% of the money each, rebalanced every "
+                           "day at 3:40 PM: Bitcoin trend, short volatility, overnight TQQQ, RSI(2) "
+                           "dip buying, and volatility-targeted 3x trend."),
+    "safe": dict(name="Learning allocator", risk="Learns live", slot=2, band="learner",
+                 about="The same five strategies, but an online-learning algorithm (Hedge) decides "
+                       "how much money each one gets. It started with equal trust on "
+                       f"{LAUNCH_V2:%b %d} and shifts money toward whatever has been working."),
+    "daytrader": dict(name="Breakout day trader", risk="Ultra risky", slot=3, band="daytrader",
+                      about="Every half hour, checks whether QQQ has broken out of its normal range "
+                            "for that time of day. Upside break: buys TQQQ (3x long). Downside "
+                            "break: buys SQQQ (3x short). Trails a stop at the band or VWAP and "
+                            "sells everything by the close."),
 }
-PERIODS = {"ml_dev": "Backtest 2003–2017", "coldstart": "Backtest 2017–2022, learning from scratch"}
+SLEEVE_INFO = {
+    "Crypto trend (BTC)": ("Bitcoin", "Holds Bitcoin while its 28-day return is positive, sized to ~60%/yr volatility"),
+    "Short volatility (VIX curve)": ("SVXY", "Bets volatility falls while VIX is below its 3-month level"),
+    "Overnight TQQQ, uptrend only": ("TQQQ overnight", "Holds TQQQ from 3:40 PM to the next open, while QQQ is in an uptrend"),
+    "RSI(2) dip buying, 3x": ("TQQQ", "Buys TQQQ after a sharp 2-day dip in an uptrend, sells on the bounce"),
+    "Leveraged trend + vol target": ("TQQQ", "Holds TQQQ while QQQ is above its 200-day average, sized to ~40%/yr volatility"),
+}
+SHORT_NAMES = {"Crypto trend (BTC)": "Crypto trend", "Short volatility (VIX curve)": "Short volatility",
+               "Overnight TQQQ, uptrend only": "Overnight TQQQ", "RSI(2) dip buying, 3x": "Dip buying",
+               "Leveraged trend + vol target": "3x trend"}
 
 
 def money(v):
@@ -51,9 +61,10 @@ def signed_pct(v):
 def trading_days(launch, now):
     """Trading days from the launch through today (today only once the market has opened)."""
     cal = market_calendar()
-    days = [d for d in cal.index if launch <= d <= now.normalize().tz_localize(None)]
+    today = now.normalize().tz_localize(None)
+    days = [d for d in cal.index if launch <= d <= today]
     opened = now.hour * 60 + now.minute >= 9 * 60 + 30
-    return [d for d in days if d < now.normalize().tz_localize(None) or opened]
+    return [d for d in days if d < today or opened]
 
 
 def spy_values(days, now):
@@ -80,16 +91,10 @@ def account_values(client, days):
     return out.tolist()
 
 
-def normal_range(name, column, horizon):
-    """10th-90th percentile of $1,000 after h trading days, for h = 0..horizon.
-
-    For the from-scratch day trader this comes from its 60 simulated fresh starts. For the
-    others it comes from every h-day stretch of the development-period backtest."""
-    if name == "coldstart":
-        band = pd.read_csv(ROOT / "report" / "coldstart_band.csv", index_col=0)
-        band = band.reindex(range(horizon + 1)).ffill()  # past a year, hold the last range
-        return band["p10"].tolist(), band["p90"].tolist()
-    r = pd.read_csv(ROOT / "report" / f"{name}_daily_returns.csv", index_col=0)[column].dropna()
+def normal_range(band, horizon):
+    """10th-90th percentile of $1,000 after h trading days, for h = 0..horizon, from every
+    h-day stretch of the strategy's full backtest."""
+    r = pd.read_csv(ROOT / "report" / f"v2_{band}_daily_returns.csv", index_col=0)["ret"].dropna()
     growth = np.r_[1.0, (1 + r).cumprod().to_numpy()]
     lo, hi = [START_VALUE], [START_VALUE]
     for h in range(1, horizon + 1):
@@ -99,47 +104,12 @@ def normal_range(name, column, horizon):
     return lo, hi
 
 
-def verdict(name, column):
-    s = pd.read_csv(ROOT / "report" / f"{name}_scorecard.csv", index_col=0).loc[column]
-    return (f"{PERIODS[name]}: {float(s['CAGR']):.1%}/yr, worst drop {float(s['Max drawdown']):.0%}. "
-            f"{'Passed' if s['Result'] == 'PASS' else 'Failed'} the scorecard "
-            f"(t = {float(s['t-stat vs risk-matched SPY']):+.1f}, needed {float(s['Needed t']):.1f}).")
-
-
-def beliefs():
-    """The day trader's weights after each morning's retrain, plus the long-history model's
-    weights for comparison. Returns (html, chart data)."""
-    ref = json.loads((ROOT / "report" / "daytrader_reference_weights.json").read_text())
-    history = [r for r in read_log("daytrader_model") if r.get("action") == "retrained"]
-    order = sorted(ref["weights"], key=lambda f: -abs(ref["weights"][f]))
-    if not history:
-        return ("<p class='empty'>Not trained yet. It trains for the first time at about 9:25 AM ET "
-                "on its first trading day.</p>", None)
-    last = history[-1]
-    note = (f"Learned from <b>{last['examples']:,}</b> examples ({last['days_learned']} trading days "
-            f"since {last['seed_start']}), retrained {pd.Timestamp(last['time']):%b %d}.")
-    if len(history) > 1:
-        prev = history[-2]["weights"]
-        moved = max(order, key=lambda f: abs(last["weights"][f] - prev[f]))
-        note += (f" Biggest change since the previous retrain: <b>{html.escape(ref['names'][moved])}</b>, "
-                 f"{prev[moved]:+.2f} → {last['weights'][moved]:+.2f} bps.")
-        flipped = [f for f in order if np.sign(last["weights"][f]) != np.sign(prev[f])]
-        if flipped:
-            note += f" Flipped direction: {html.escape(', '.join(ref['names'][f] for f in flipped))}."
-    agree = sum(np.sign(last["weights"][f]) == np.sign(ref["weights"][f]) for f in order)
-    note += (f" It agrees in direction with the long-history model on <b>{agree} of {len(order)}</b> "
-             "features.")
-    data = {"labels": [pd.Timestamp(r["time"]).strftime("%b %d") for r in history],
-            "features": [{"name": ref["names"][f], "ref": ref["weights"][f],
-                          "values": [r["weights"][f] for r in history]} for f in order]}
-    minis = "".join(f'<div class="mini"><div class="mini-title">{html.escape(ref["names"][f])}</div>'
-                    f'<div class="mini-chart"><canvas id="w-{i}"></canvas></div></div>'
-                    for i, f in enumerate(order))
-    return (f"<p class='note'>{note}</p><div class='minis'>{minis}</div>"
-            "<p class='note'>Each panel is one weight (bps of predicted 30-minute return per typical "
-            "move in that feature) after each morning's retrain. The gray line is where a model "
-            "trained on 10 years of data settled. If learning works, the colored lines should "
-            "drift toward the gray ones.</p>", data)
+def verdict(band, summary):
+    f = summary["finalists"][band]
+    dev, hold = f["dev"], f["holdout"]
+    return (f"Backtest: {dev['cagr']:.0%}/yr in {dev['start'][:4]}–{dev['end'][:4]} (design years), "
+            f"{hold['cagr']:.0%}/yr in {hold['start'][:4]}–{hold['end'][:4]} (never used for design), "
+            f"worst drop {min(dev['max_drawdown'], hold['max_drawdown']):.0%}.")
 
 
 def table(headers, rows, empty):
@@ -157,7 +127,7 @@ def positions_table(client):
     return table(["Holding", "Shares", "Value", "Gain"], rows, "All cash right now.")
 
 
-def trades_table(account, limit=8):
+def trades_table(account, limit=10):
     trades = [r for r in read_log(account) if r.get("action") in ("buy", "sell")][-limit:][::-1]
     rows = [[html.escape(pd.Timestamp(r["time"]).strftime("%b %d, %I:%M %p")),
              f'<span class="{r["action"]}">{r["action"].upper()}</span>', html.escape(r["symbol"]),
@@ -166,25 +136,75 @@ def trades_table(account, limit=8):
     return table(["When (ET)", "Side", "Symbol", "Amount", "Price", "Why"], rows, "No trades yet.")
 
 
+def v2_rebalances(account):
+    return [r for r in read_log(account) if r.get("action") == "rebalanced" and "budgets" in r]
+
+
+def sleeves_table(account):
+    """Each sleeve's signal, budget and resulting share of the account, as of the latest
+    daily rebalance."""
+    rebs = v2_rebalances(account)
+    if not rebs:
+        return "<p class='empty'>The first daily rebalance happens at 3:40 PM ET on a trading day.</p>"
+    last = rebs[-1]
+    rows = []
+    for s in SLEEVES:
+        sig, bud = last["signals"].get(s, 0.0), last["budgets"].get(s, 0.0)
+        status = ("out" if sig <= 0 else "in" if sig >= 0.999 else f"in, {sig:.0%} of its share")
+        rows.append([f"<b>{html.escape(SHORT_NAMES[s])}</b><br><span class='note'>"
+                     f"{html.escape(SLEEVE_INFO[s][1])}</span>", html.escape(SLEEVE_INFO[s][0]),
+                     status, f"{bud:.0%}", f"{bud * max(sig, 0):.0%}"])
+    when = pd.Timestamp(last["time"]).strftime("%b %d, %I:%M %p")
+    return (f"<p class='note'>As of the {when} rebalance. Share = the sleeve's budget; in the account = "
+            "budget × how invested the sleeve is.</p>"
+            + table(["Sleeve", "Trades", "Signal", "Share", "In the account"], rows, ""))
+
+
+def learning_panel():
+    """How the learning allocator's trust in each sleeve has moved since launch."""
+    rebs = v2_rebalances("safe")
+    if not rebs:
+        return "", None
+    labels = [pd.Timestamp(r["time"]).strftime("%b %d") for r in rebs]
+    minis = [{"title": SHORT_NAMES[s], "labels": labels, "ref": 0.2,
+              "values": [r["budgets"].get(s, 0.0) for r in rebs]} for s in SLEEVES]
+    last, first = rebs[-1]["budgets"], rebs[0]["budgets"]
+    top = max(SLEEVES, key=lambda s: last.get(s, 0))
+    low = min(SLEEVES, key=lambda s: last.get(s, 0))
+    note = (f"After {len(rebs)} day{'s' if len(rebs) != 1 else ''} of learning it trusts "
+            f"<b>{html.escape(SHORT_NAMES[top])}</b> most ({last[top]:.0%}) and "
+            f"<b>{html.escape(SHORT_NAMES[low])}</b> least ({last[low]:.0%}). "
+            "It never goes below 5% on any sleeve, so it keeps checking ones that are out of favor.")
+    grid = "".join(f'<div class="mini"><div class="mini-title">{html.escape(m["title"])}</div>'
+                   f'<div class="mini-chart"><canvas id="m-{i}"></canvas></div></div>'
+                   for i, m in enumerate(minis))
+    return (f"<h4>What it has learned</h4><p class='note'>{note}</p><div class='minis'>{grid}</div>"
+            "<p class='note'>Each panel is one sleeve's share of the money after each day's update. "
+            "The gray line is 20%, an equal split (what the fund uses).</p>", minis)
+
+
 def decisions_table(now):
-    """The day trader's most recent day of decisions."""
-    rows = [r for r in read_log("daytrader") if r.get("action") in ("decision", "skipped")]
+    """The day trader's most recent day of breakout checks."""
+    rows = [r for r in read_log("daytrader")
+            if (r.get("action") == "decision" and r.get("strategy") == "noise-area")
+            or (r.get("action") == "skipped" and pd.Timestamp(r["time"]).tz_localize(None) >= LAUNCH_V2)]
     if not rows:
-        return table([], [], "No decisions yet. The first one happens at 10:00 AM ET on a trading day.")
+        return "<p class='empty'>No breakout checks yet. The first one happens at 10:00 AM ET on a trading day.</p>"
     last_day = pd.Timestamp(rows[-1]["time"]).date()
-    rows = [r for r in rows if pd.Timestamp(r["time"]).date() == last_day]
     out = []
     for r in rows:
-        p = r.get("predicted_bps", {})
-        out.append([html.escape(r.get("decision", "")),
-                    f"{p.get('SPY', float('nan')):+.2f}" if p else "—",
-                    f"{p.get('QQQ', float('nan')):+.2f}" if p else "—",
-                    html.escape(f"{r.get('before', '')} → {r.get('after', '')}" if r["action"] == "decision"
-                                else f"skipped: {r.get('why', '')}")])
+        if pd.Timestamp(r["time"]).date() != last_day:
+            continue
+        if r["action"] == "skipped":
+            out.append([html.escape(r.get("decision", "")), "—", "—", "—", "—", "skipped: run started late"])
+            continue
+        moved = r["before"] != r["after"]
+        out.append([html.escape(r["decision"]), f"{r['qqq']:.2f}", f"{r['upper']:.2f}", f"{r['lower']:.2f}",
+                    f"{r['vwap']:.2f}", (f"<b>{r['before']} → {r['after']}</b>" if moved else r["after"])])
     label = "Today" if last_day == now.date() else last_day.strftime("%b %d")
-    return (f"<h4>{label}'s decisions</h4><p class='note'>Predicted next-30-minute return, in bps "
-            f"(1 bp = 0.01%). It buys only when a prediction beats 2 bps, the round-trip cost.</p>"
-            + table(["Time", "SPY", "QQQ", "Position"], out, ""))
+    return (f"<h4>{label}'s breakout checks</h4><p class='note'>Above the upper band → buy TQQQ. Below "
+            "the lower band → buy SQQQ. Once in, it exits when QQQ crosses back past the band or VWAP.</p>"
+            + table(["Time", "QQQ", "Upper band", "Lower band", "VWAP", "Position"], out, ""))
 
 
 def build():
@@ -195,29 +215,31 @@ def build():
     days = trading_days(launch, now)
     labels = ["Start"] + [d.strftime("%b %d") for d in days]
     spy = [START_VALUE] + spy_values(days, now)
+    summary = json.loads((ROOT / "report" / "v2_summary.json").read_text())
 
-    series, cards, tiles = [], [], []
+    series, cards, tiles, minis = [], [], [], None
     for account, info in STRATEGIES.items():
         client = trading_client(account)
         values = [START_VALUE] + account_values(client, days)
-        lo, hi = normal_range(*info["report"], len(days))
-        series.append({"name": info["name"], "slot": info["slot"], "values": values,
-                       "lo": lo, "hi": hi})
-        change = values[-1] / START_VALUE - 1
+        lo, hi = normal_range(info["band"], len(days))
+        series.append({"name": info["name"], "slot": info["slot"], "values": values, "lo": lo, "hi": hi})
         tiles.append(f"""<div class="tile"><div class="tile-label"><i class="dot s{info['slot']}"></i>
 {html.escape(info['name'])}</div><div class="tile-value">{money(values[-1])}</div>
-<div class="tile-sub">{signed_pct(change)} since start</div></div>""")
-        extra = ""
+<div class="tile-sub">{signed_pct(values[-1] / START_VALUE - 1)} since start</div></div>""")
         if account == "daytrader":
-            belief_html, belief_data = beliefs()
-            extra = f"<h4>What the model believes</h4>{belief_html}" + decisions_table(now)
+            extra = decisions_table(now)
+        else:
+            extra = "<h4>The five sleeves</h4>" + sleeves_table(account)
+            if account == "safe":
+                panel, minis = learning_panel()
+                extra += panel
         cards.append(f"""<section class="card">
 <div class="card-head"><h2><i class="dot s{info['slot']}"></i>{html.escape(info['name'])}</h2>
 <span class="badge">{html.escape(info['risk'])}</span></div>
 <p class="about">{html.escape(info['about'])}</p>
-<p class="note">{html.escape(verdict(*info['report']))}</p>
+<p class="note">{html.escape(verdict(info['band'], summary))}</p>
 <div class="chart"><canvas id="chart-{account}" aria-label="{html.escape(info['name'])} value over time"></canvas></div>
-<p class="note">Shaded: the range the backtest says is normal (80% of outcomes) after this many days.</p>
+<p class="note">Shaded: the range its backtest says is normal (80% of outcomes) after this many days.</p>
 <h4>Holdings</h4>{positions_table(client)}
 {extra}
 <h4>Recent trades</h4>{trades_table(account)}
@@ -226,20 +248,19 @@ def build():
 <div class="tile-value">{money(spy[-1])}</div>
 <div class="tile-sub">{signed_pct(spy[-1] / START_VALUE - 1)} since start</div></div>""")
 
-    data = {"labels": labels, "spy": spy, "series": series,
-            "accounts": list(STRATEGIES), "beliefs": belief_data}
+    data = {"labels": labels, "spy": spy, "series": series, "accounts": list(STRATEGIES), "minis": minis}
     SITE.mkdir(exist_ok=True)
     reports = SITE / "reports"
     reports.mkdir(exist_ok=True)
-    for name in ("report", "ml_dev", "daytrader_dev", "coldstart_dev"):
+    for name in ("v2_research", "report", "ml_dev", "daytrader_dev", "coldstart_dev"):
         src = ROOT / "report" / f"{name}.html"
         if src.exists():
             shutil.copy(src, reports / f"{name}.html")
-    (SITE / "index.html").write_text(page(now, launch, tiles, cards, data), encoding="utf-8")
+    (SITE / "index.html").write_text(page(now, launch, tiles, cards, data, summary), encoding="utf-8")
     print(f"dashboard written: {SITE / 'index.html'}")
 
 
-def page(now, launch, tiles, cards, data):
+def page(now, launch, tiles, cards, data, summary):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -276,13 +297,14 @@ def page(now, launch, tiles, cards, data):
   .dot {{ width:10px; height:10px; border-radius:50%; display:inline-block; flex:none; }}
   .s0 {{ background:var(--s0); }} .s1 {{ background:var(--s1); }} .s2 {{ background:var(--s2); }} .s3 {{ background:var(--s3); }}
   .chart {{ position:relative; height:260px; margin:8px 0 4px; }}
-  .minis {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:10px; margin:8px 0; }}
+  .minis {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px; margin:8px 0; }}
   .mini {{ border:1px solid var(--grid); border-radius:8px; padding:8px 10px 4px; }}
-  .mini-title {{ font-size:12px; color:var(--ink-2); line-height:1.3; min-height:2.6em; }}
+  .mini-title {{ font-size:12px; color:var(--ink-2); }}
   .mini-chart {{ position:relative; height:90px; }}
   .scroll {{ overflow-x:auto; }}
   table {{ border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; font-size:13px; }}
-  th, td {{ text-align:left; padding:6px 10px; border-bottom:1px solid var(--grid); white-space:nowrap; }}
+  th, td {{ text-align:left; padding:6px 10px; border-bottom:1px solid var(--grid); vertical-align:top; }}
+  td {{ white-space:nowrap; }} td:first-child {{ white-space:normal; min-width:200px; }}
   th {{ color:var(--ink-2); font-weight:600; font-size:12px; }}
   .buy {{ color:var(--good); font-weight:650; }} .sell {{ color:var(--bad); font-weight:650; }}
   footer {{ color:var(--ink-2); font-size:12.5px; margin-top:28px; }}
@@ -291,17 +313,20 @@ def page(now, launch, tiles, cards, data):
 <body><main>
 <h1>Paper Trading Lab</h1>
 <p class="sub">Three strategies, each with $1,000 of fake money in its own Alpaca paper account,
-trading automatically. Started {launch:%b %d, %Y} · updated {now:%b %d, %Y %I:%M %p} ET.</p>
+trading automatically. Started {launch:%b %d, %Y}; the v2 strategies took over on
+{LAUNCH_V2:%b %d}. Updated {now:%b %d, %Y %I:%M %p} ET.</p>
 <div class="tiles">{''.join(tiles)}</div>
 <section class="card"><h2>Growth of $1,000</h2>
 <p class="note">All three strategies against simply holding SPY. Hover for values.</p>
 <div class="chart"><canvas id="chart-all" aria-label="All strategies and SPY over time"></canvas></div></section>
 {''.join(cards)}
-<footer>Fake money on paper accounts; not investment advice. None of these strategies passed its
-backtest scorecard, so this is an experiment, not an expectation of profit.
-Backtest reports: <a href="reports/report.html">baselines</a> ·
-<a href="reports/ml_dev.html">monthly ML</a> · <a href="reports/daytrader_dev.html">day trader</a> ·
-<a href="reports/coldstart_dev.html">day trader learning from scratch</a>.</footer>
+<footer>Fake money on paper accounts; not investment advice. {summary['variants']} strategy variants
+have been tested in this lab and none clears the strict significance bar
+(t ≥ {summary['t_needed']:.2f}), so treat this as an experiment.
+<a href="reports/v2_research.html">How these strategies were chosen</a> · earlier reports:
+<a href="reports/report.html">baselines</a> · <a href="reports/ml_dev.html">monthly ML</a> ·
+<a href="reports/daytrader_dev.html">ML day trader</a> ·
+<a href="reports/coldstart_dev.html">learning from scratch</a>.</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 <script>
@@ -327,8 +352,8 @@ function base() {{
     }}
   }};
 }}
-const line = (label, data, color, width = 2) => ({{ label, data, borderColor: color, backgroundColor: color,
-  borderWidth: width, pointRadius: DATA.labels.length < 3 ? 4 : 0, pointHoverRadius: 4, tension: 0 }});
+const line = (label, data, color, width = 2, n = DATA.labels.length) => ({{ label, data, borderColor: color,
+  backgroundColor: color, borderWidth: width, pointRadius: n < 3 ? 4 : 0, pointHoverRadius: 4, tension: 0 }});
 function draw() {{
   charts.forEach(c => c.destroy()); charts.length = 0;
   const spy = line('Buy & hold SPY', DATA.spy, css('--s0'), 1.5);
@@ -341,20 +366,20 @@ function draw() {{
       data: {{ labels: DATA.labels, datasets: [lo, hi, line(s.name, s.values, css('--s' + s.slot)),
         line('Buy & hold SPY', DATA.spy, css('--s0'), 1.5)] }} }}));
   }});
-  if (DATA.beliefs) DATA.beliefs.features.forEach((f, i) => {{
+  if (DATA.minis) DATA.minis.forEach((m, i) => {{
     const o = base();
     o.plugins.legend.display = false;
-    o.plugins.tooltip.callbacks.label = c => ` ${{c.dataset.label}}: ${{c.parsed.y >= 0 ? '+' : ''}}${{c.parsed.y.toFixed(2)}} bps`;
+    o.plugins.tooltip.callbacks.label = c => ` ${{c.dataset.label}}: ${{(c.parsed.y * 100).toFixed(1)}}%`;
     o.scales.x.ticks.display = false;
+    o.scales.y.min = 0;
     o.scales.y.ticks.maxTicksLimit = 3;
-    o.scales.y.ticks.callback = v => (v > 0 ? '+' : '') + v;
-    const n = DATA.beliefs.labels.length;
-    charts.push(new Chart(document.getElementById('w-' + i), {{ type: 'line', options: o,
-      data: {{ labels: DATA.beliefs.labels, datasets: [
-        {{ label: 'Live model', data: f.values, borderColor: css('--s3'), backgroundColor: css('--s3'),
-           borderWidth: 2, pointRadius: n < 3 ? 3 : 0, pointHoverRadius: 3 }},
-        {{ label: '10-year model', data: Array(n).fill(f.ref), borderColor: css('--s0'),
-           borderWidth: 1, pointRadius: 0, pointHoverRadius: 0 }}] }} }}));
+    o.scales.y.ticks.callback = v => Math.round(v * 100) + '%';
+    const n = m.labels.length;
+    charts.push(new Chart(document.getElementById('m-' + i), {{ type: 'line', options: o,
+      data: {{ labels: m.labels, datasets: [
+        line('Learned share', m.values, css('--s2'), 2, n),
+        {{ label: 'Equal split', data: Array(n).fill(m.ref), borderColor: css('--s0'), borderWidth: 1,
+           pointRadius: 0, pointHoverRadius: 0 }}] }} }}));
   }});
 }}
 draw();

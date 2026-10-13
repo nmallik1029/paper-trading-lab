@@ -6,3 +6,17 @@ first_tried,config
 2026-10-12,Day trader | ridge | SPY+QQQ 30-min blocks | enter above round-trip cost | features intraday-v1
 2026-10-12,Day trader | gbm | SPY+QQQ 30-min blocks | enter above round-trip cost | features intraday-v1
 2026-10-12,"Day trader | ridge | learns from scratch: 5-day seed, retrained daily, never forgets | SPY+QQQ 30-min blocks | features intraday-v1"
+2026-10-13,v2 daily | Leveraged trend + vol target | trend_voltarget {} | defaults from literature
+2026-10-13,v2 daily | Short volatility (VIX curve) | short_vol {} | defaults from literature
+2026-10-13,v2 daily | Overnight TQQQ | overnight {} | defaults from literature
+2026-10-13,"v2 daily | Overnight TQQQ, uptrend only | overnight {'trend_filter': True} | defaults from literature"
+2026-10-13,"v2 daily | Turn of month, 3x | turn_of_month {} | defaults from literature"
+2026-10-13,"v2 daily | RSI(2) dip buying, 3x | rsi2_dip {} | defaults from literature"
+2026-10-13,v2 daily | Crypto trend (BTC) | crypto_trend {} | defaults from literature
+2026-10-13,"v2 intraday | Noise-area momentum, paper sizing | QQQ signal, TQQQ/SQQQ execution | published defaults"
+2026-10-13,"v2 intraday | Noise-area momentum, full 3x | QQQ signal, TQQQ/SQQQ execution | published defaults"
+2026-10-13,"v2 intraday | Opening-range breakout, paper sizing | QQQ signal, TQQQ/SQQQ execution | published defaults"
+2026-10-13,"v2 intraday | Opening-range breakout, full 3x | QQQ signal, TQQQ/SQQQ execution | published defaults"
+2026-10-13,"v2 multi-strategy | Equal weight | sleeves: Crypto trend (BTC), Short volatility (VIX curve), Overnight TQQQ, uptrend only, RSI(2) dip buying, 3x, Leveraged trend + vol target"
+2026-10-13,"v2 multi-strategy | Risk parity | sleeves: Crypto trend (BTC), Short volatility (VIX curve), Overnight TQQQ, uptrend only, RSI(2) dip buying, 3x, Leveraged trend + vol target"
+2026-10-13,"v2 multi-strategy | Learning allocator (Hedge) | sleeves: Crypto trend (BTC), Short volatility (VIX curve), Overnight TQQQ, uptrend only, RSI(2) dip buying, 3x, Leveraged trend + vol target"
