@@ -248,8 +248,8 @@ def unwind(dry_run):
     for account in ("moderate", "safe"):
         if logged_today(account, ("unwound",)):
             continue
-        rebs = [r for r in read_log(account) if r.get("action") == "rebalanced"]
-        if not rebs:
+        rebs = [r for r in read_log(account) if r.get("action") == "rebalanced" and "day_tqqq" in r]
+        if not rebs:  # (v1 rebalances had no overnight sleeve)
             continue
         keep = rebs[-1]["day_tqqq"]
         client = trading_client(account)
