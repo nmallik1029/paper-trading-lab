@@ -161,18 +161,28 @@ def rebalance(client, account, target, dry_run, why):
     equity = float(client.get_account().equity)
     want = {s: w * equity * (1 - CASH_BUFFER) for s, w in target.items() if w > 1e-4}
     small = SMALL_TRADE * equity
+    errors = []
+
+    def attempt(*args, **kwargs):  # one failed order shouldn't stop the rest
+        try:
+            trade(client, account, *args, dry_run=dry_run, why=why, **kwargs)
+        except Exception as e:
+            errors.append(f"{args[0]}: {e}")
+            log(account, action="error", symbol=args[0], error=str(e)[:300], why=why)
+
     held = holdings(client)
     for s, value in held.items():
         if s not in want:
-            trade(client, account, s, "sell", everything=True, dry_run=dry_run, why=why)
+            attempt(s, "sell", everything=True)
         elif value - want[s] > small:
-            trade(client, account, s, "sell", value - want[s], dry_run=dry_run, why=why)
+            attempt(s, "sell", value - want[s])
     if not dry_run:
         held = holdings(client)
     for s, value in want.items():
         gap = value - held.get(s, 0.0)
         if gap > small or (s not in held and gap >= MIN_ORDER):
-            trade(client, account, s, "buy", gap, dry_run=dry_run, why=why)
+            attempt(s, "buy", gap)
+    return errors
 
 
 # --- the two daily accounts: multi-strategy fund and learning allocator ---------------
@@ -227,8 +237,8 @@ def daily(dry_run):
             continue
         targets, day_tqqq = instrument_targets(budgets, signals)
         client = trading_client(account)
-        rebalance(client, account, targets, dry_run, why=f"daily rebalance ({how})")
-        log(account, action="rebalanced", date=str(R.index[-1].date()), how=how,
+        errors = rebalance(client, account, targets, dry_run, why=f"daily rebalance ({how})")
+        log(account, action="rebalanced", date=str(R.index[-1].date()), how=how, errors=errors,
             budgets={k: round(float(v), 4) for k, v in budgets.items()},
             signals={k: round(float(v), 4) for k, v in signals.items()},
             targets={k: round(float(v), 4) for k, v in targets.items()},
@@ -340,19 +350,22 @@ def daytrader(session, dry_run):
             log("daytrader", action="skipped", decision=t.strftime("%H:%M"), why="run started late")
             continue
         sleep_until(t + pd.Timedelta(seconds=15))  # let the bar that ended at t publish
-        price, upper, lower, vwap = nam_state(history, t)
-        pos = fund_position(client) if not dry_run else 0
-        want = iv.nam_decide(pos, price, upper, lower, vwap)
         why = f"{t:%H:%M} decision"
-        if want != pos:
-            if pos:
-                trade(client, "daytrader", names[pos], "sell", everything=True, dry_run=dry_run, why=why)
-            if want:
-                cash = float(client.get_account().buying_power) * (1 - CASH_BUFFER)
-                trade(client, "daytrader", names[want], "buy", cash, dry_run=dry_run, why=why)
-        log("daytrader", action="decision", decision=t.strftime("%H:%M"), strategy="noise-area",
-            qqq=round(price, 2), upper=round(upper, 2), lower=round(lower, 2), vwap=round(vwap, 2),
-            before=names[pos], after=names[want], dry_run=dry_run)
+        try:
+            price, upper, lower, vwap = nam_state(history, t)
+            pos = fund_position(client) if not dry_run else 0
+            want = iv.nam_decide(pos, price, upper, lower, vwap)
+            if want != pos:
+                if pos:
+                    trade(client, "daytrader", names[pos], "sell", everything=True, dry_run=dry_run, why=why)
+                if want:
+                    cash = float(client.get_account().buying_power) * (1 - CASH_BUFFER)
+                    trade(client, "daytrader", names[want], "buy", cash, dry_run=dry_run, why=why)
+            log("daytrader", action="decision", decision=t.strftime("%H:%M"), strategy="noise-area",
+                qqq=round(price, 2), upper=round(upper, 2), lower=round(lower, 2), vwap=round(vwap, 2),
+                before=names[pos], after=names[want], dry_run=dry_run)
+        except Exception as e:  # keep going: the next decision re-reads the real position
+            log("daytrader", action="error", decision=t.strftime("%H:%M"), error=str(e)[:300])
         persist(f"daytrader: {t:%H:%M} decision")
 
     if i_close:
