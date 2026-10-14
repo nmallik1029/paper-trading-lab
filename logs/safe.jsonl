@@ -2,3 +2,7 @@
 {"time": "2026-10-12T14:23:49-04:00", "action": "buy", "symbol": "XLE", "qty": 5.025151515, "price": 66.0, "dollars": 331.66, "why": "monthly rebalance, 2026-09-30 signal"}
 {"time": "2026-10-12T14:23:52-04:00", "action": "buy", "symbol": "XLP", "qty": 3.940826996, "price": 84.16, "dollars": 331.66, "why": "monthly rebalance, 2026-09-30 signal"}
 {"time": "2026-10-12T14:23:52-04:00", "action": "rebalanced", "signal_date": "2026-09-30", "target": {"XLB": 0.3333, "XLE": 0.3333, "XLP": 0.3333}, "equity": 999.81}
+{"time": "2026-10-14T13:20:17-04:00", "action": "buy", "symbol": "SQQQ", "qty": 3.12705948, "price": 35.81, "dollars": 111.98, "why": "13:20 decision (:20/:50 clock)"}
+{"time": "2026-10-14T13:20:18-04:00", "action": "buy", "symbol": "SPXU", "qty": 3.29159318, "price": 34.02, "dollars": 111.98, "why": "13:20 decision (:20/:50 clock)"}
+{"time": "2026-10-14T13:20:19-04:00", "action": "buy", "symbol": "SOXS", "qty": 2.684727883, "price": 41.71, "dollars": 111.98, "why": "13:20 decision (:20/:50 clock)"}
+{"time": "2026-10-14T13:20:19-04:00", "action": "decision", "decision": "13:20", "strategy": "staggered-breakout", "clock": ":20/:50", "markets": {"QQQ": {"price": 730.37, "upper": 746.87, "lower": 734.75, "vwap": 734.0, "before": "cash", "after": "SQQQ"}, "SPY": {"price": 769.46, "upper": 779.95, "lower": 773.0, "vwap": 772.24, "before": "cash", "after": "SPXU"}, "SMH": {"price": 568.85, "upper": 592.84, "lower": 571.68, "vwap": 572.29, "before": "cash", "after": "SOXS"}}, "dry_run": false}
