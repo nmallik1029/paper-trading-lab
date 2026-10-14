@@ -6,6 +6,7 @@
     python live.py daytrader --replay 2026-10-09     # rerun a past day with live data, no orders
     python live.py flatten daytrader|moderate|safe   # emergency: sell everything
     python live.py safety                      # sell the day trader's position if its session died
+    python live.py watchdog                    # restart the day traders if their session died
 
 cron-job.org starts these through GitHub Actions (.github/workflows). Every decision is
 appended to logs/<account>.jsonl, which the dashboard reads.
@@ -92,6 +93,18 @@ def persist(message):
             subprocess.run(["git", "pull", "--rebase", "-q"], check=False)
             if subprocess.run(["git", "push", "-q"], check=False).returncode == 0:
                 break
+
+
+def retry(fn, *args, tries=3, wait=15, **kwargs):
+    """Call fn, retrying a couple of times on errors (network blips, API hiccups)."""
+    for attempt in range(tries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if attempt == tries - 1:
+                raise
+            print(f"retrying {getattr(fn, '__name__', 'call')} after error: {e}")
+            time.sleep(wait)
 
 
 def schedule(day):
@@ -380,7 +393,11 @@ def sell_shares(client, account, symbol, qty, dry_run, why):
     """Sell `qty` shares of `symbol` (all of them if that's about what's held)."""
     if dry_run:
         return trade(client, account, symbol, "sell", dollars=0.0, dry_run=True, why=why)
-    held = float(client.get_open_position(symbol).qty)
+    try:
+        held = float(client.get_open_position(symbol).qty)
+    except Exception:  # already sold (a safety close-out, or a manual flatten)
+        log(account, action="note", symbol=symbol, why="position already closed")
+        return None
     if qty >= held * 0.999:
         return trade(client, account, symbol, "sell", everything=True, why=why)
     order = client.submit_order(MarketOrderRequest(symbol=symbol, qty=round(qty, 9), side=OrderSide.SELL,
@@ -389,6 +406,35 @@ def sell_shares(client, account, symbol, qty, dry_run, why):
     q, price = float(fill.filled_qty), float(fill.filled_avg_price)
     log(account, action="sell", symbol=symbol, qty=q, price=price, dollars=round(q * price, 2), why=why)
     return fill
+
+
+def reconcile_slices(client, st, dry_run):
+    """Make the slices' records agree with what the account actually holds, in case a
+    previous run stopped before saving: shrink claims to the shares that exist, and sell
+    any fund no slice claims."""
+    if dry_run:
+        return
+    held = {p.symbol: float(p.qty) for p in client.get_all_positions()}
+    claims = {}
+    for key, sl in st["slices"].items():
+        if sl.get("side"):
+            claims.setdefault(sl["fund"], []).append(key)
+    for fund, keys in claims.items():
+        claimed = sum(st["slices"][k].get("qty", 0.0) for k in keys)
+        actual = held.get(fund, 0.0)
+        if actual <= 0:
+            for k in keys:
+                st["slices"][k] = {"side": 0}
+        elif claimed > 0 and actual < claimed * 0.999:
+            for k in keys:
+                st["slices"][k]["qty"] *= actual / claimed
+    for sym in held:
+        if sym not in claims:
+            try:
+                trade(client, "safe", sym, "sell", everything=True, why="not held by any slice")
+            except Exception as e:
+                log("safe", action="error", symbol=sym, error=str(e)[:300])
+    save_slices(st)
 
 
 def qqq_decision(client, states, t, dry_run):
@@ -456,7 +502,7 @@ def daytrader(session, dry_run):
     10-minute decision marks, the learning allocator's 15:40 rebalance, and the close-out."""
     clients = {a: trading_client(a) for a in DAY_ACCOUNTS}
     today = now_et().date()
-    plan = schedule(today)
+    plan = retry(schedule, today)
     if plan is None:
         print("market is closed today")
         return
@@ -473,15 +519,18 @@ def daytrader(session, dry_run):
     if not events:
         print(f"nothing left to do in the {session} session today")
         return
-    history = recent_bars(pd.Timestamp(today) - pd.Timedelta(days=45), pd.Timestamp(today), symbols=DAY_SYMBOLS)
+    history = retry(recent_bars, pd.Timestamp(today) - pd.Timedelta(days=45), pd.Timestamp(today),
+                    symbols=DAY_SYMBOLS)
     st = load_slices(today)
 
-    if session == "morning" and now_et() < events[0][0]:
+    if session == "morning" and now_et() < opens + pd.Timedelta(minutes=30):
         sleep_until(opens + pd.Timedelta(minutes=1))
         for account, client in clients.items():  # every day starts flat, as in the backtest
             sell_all(client, account, dry_run, why="leftover position from a previous day", timeout=300)
         st = {"date": str(today), "budget": None, "slices": {}}
         save_slices(st)
+    else:  # a later start (the afternoon, or a restart): pick up where the records say
+        reconcile_slices(clients["safe"], st, dry_run)
 
     for t, kind, offset in events:
         if kind == "mark":
@@ -554,6 +603,36 @@ def replay(day):
     print("(+1 = hold TQQQ, -1 = hold SQQQ, 0 = cash)")
 
 
+def watchdog():
+    """Run by the hourly dashboard job: if the market is open but the day traders haven't
+    logged a decision in 25 minutes and no session is running, start one. Duplicate starts
+    are harmless: a session skips every decision that's already logged."""
+    now = now_et()
+    plan = schedule(now.date())
+    if plan is None:
+        return
+    opens, _, close = plan
+    if not opens + pd.Timedelta(minutes=45) <= now < close - pd.Timedelta(minutes=15):
+        return
+    today = str(now.date())
+    recent = [pd.Timestamp(r["time"]) for r in read_log("safe")
+              if r["time"].startswith(today) and r.get("action") in ("decision", "skipped", "error")]
+    if recent and now - max(recent) < pd.Timedelta(minutes=25):
+        return
+    for status in ("in_progress", "queued"):
+        out = subprocess.run(["gh", "run", "list", "--workflow", "daytrader.yml", "--status", status,
+                              "--json", "databaseId"], capture_output=True, text=True)
+        if out.returncode == 0 and json.loads(out.stdout or "[]"):
+            print(f"a day-trader run is {status}; leaving it alone")
+            return
+    session = "morning" if now < pd.Timestamp(now.date(), tz=TZ) + AFTERNOON else "afternoon"
+    started = subprocess.run(["gh", "workflow", "run", "daytrader.yml", "-f", f"session={session}"]).returncode == 0
+    gap = f"{(now - max(recent)).total_seconds() / 60:.0f} minutes" if recent else "since the open"
+    log("daytrader", action="restarted" if started else "error",
+        why=f"no decisions for {gap}; {'started' if started else 'could not start'} the {session} session")
+    persist("watchdog: restarted the day traders")
+
+
 def safety():
     """Run by the dashboard job: in the last 10 minutes of the day, if the day trader
     still holds something and its final decision never got logged (so the afternoon run
@@ -587,6 +666,7 @@ def main():
     f = sub.add_parser("flatten")
     f.add_argument("account", choices=["daytrader", "moderate", "safe"])
     sub.add_parser("safety", help="sell the day trader's position if its session died")
+    sub.add_parser("watchdog", help="restart the day traders if their session died")
     args = parser.parse_args()
     if getattr(args, "dry_run", False):
         global LOGS  # keep practice runs out of the real logs
@@ -604,6 +684,8 @@ def main():
         daytrader(args.session, args.dry_run)
     elif args.cmd == "safety":
         safety()
+    elif args.cmd == "watchdog":
+        watchdog()
     else:
         trading_client(args.account).close_all_positions(cancel_orders=True)
         log(args.account, action="flattened", why="manual or safety close-out")

@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write  # the safety net may commit a log entry
+  contents: write  # the safety net and the watchdog may commit a log entry
+  actions: write   # the watchdog may restart the day-trader workflow
   pages: write
   id-token: write
 
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      GH_TOKEN: ${{ github.token }}
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
@@ -48,8 +50,12 @@ jobs:
       - run: |
           git config user.name "paper-trading-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      # Near the close: if the day trader still holds something and its session died, sell.
+      # If the day traders' session died, start it again; near the close, sell anything
+      # an abandoned session left behind. Neither step can stop the dashboard from building.
+      - run: python live.py watchdog
+        continue-on-error: true
       - run: python live.py safety
+        continue-on-error: true
       - run: git pull -q  # pick up any logs committed in the meantime
       - run: python dashboard.py
       - uses: actions/upload-pages-artifact@v4

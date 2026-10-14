@@ -67,10 +67,12 @@ times instead:
 | 9:20 | `daytrader.yml` (morning) | Sell the learning allocator's overnight TQQQ at the open; run both intraday strategies until 13:10 |
 | 13:05 | `daytrader.yml` (afternoon) | Run both intraday strategies from 13:20; rebalance the learning allocator at 15:40; sell everything at 15:57 |
 | 15:40 | `monthly.yml` | Backup trigger for the daily rebalance; does nothing if it already happened |
-| :50 past each hour, 10–16 | `dashboard.yml` | Rebuild the dashboard; close any intraday position if its session failed |
+| :50 past each hour, 10–16 | `dashboard.yml` | Rebuild the dashboard; restart the intraday session if it has stopped making decisions; close any intraday position a failed session left open |
 
 The trading job also requests a dashboard rebuild every 30 minutes. Only one trading job can run
-at a time, and each run checks the logs first, so a duplicate trigger never trades twice.
+at a time, and each run checks the logs first, so a duplicate trigger never trades twice. A slow or
+rejected order is logged and skipped rather than stopping a run, and if a session stops making
+decisions during market hours, the hourly dashboard job starts it again.
 
 ## Repository layout
 
@@ -82,6 +84,7 @@ at a time, and each run checks the logs first, so a duplicate trigger never trad
 | `sleeves.py`, `allocators.py` | The five daily strategies, and equal-weight, risk-parity and Hedge allocation |
 | `research_v2.py`, `research_multi.py`, `research_staggered.py`, `run_v2_report.py` | Backtests and the research write-up |
 | `rehearse.py` | Replays a past trading day through the live code and compares it with the backtest |
+| `tests/` | Checks for the live bot's failure handling, run against a fake broker |
 | `backtest.py`, `metrics.py`, `scorecard.py`, `report.py` | Backtest engine, statistics, significance checks, report pages |
 | `universe.py`, `intraday_data.py`, `broker.py` | Market data and Alpaca connections |
 | `logs/` | Every decision and trade the bots have made |

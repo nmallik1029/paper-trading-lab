@@ -344,6 +344,8 @@ def build():
     summary = json.loads((ROOT / "report" / "v2_summary.json").read_text())
     trades = all_trades()
     n_today = sum(t.date() == now.date() for t, _, _ in trades)
+    issues = sum(r.get("action") in ("error", "skipped", "restarted") and r["time"].startswith(str(now.date()))
+                 for a in STRATEGIES for r in read_log(a))
 
     clients = {a: trading_client(a) for a in STRATEGIES}
     series, tiles, cards, minis = [], [], [], None
@@ -392,7 +394,7 @@ def build():
             text = text.replace("<body><main>", f"<body><main>\n{back}", 1)
             (reports / "v1" / f.name).write_text(text, encoding="utf-8")
     page_html = page(now, launch, tiles, cards, data, summary, n_today, len(trades), trade_feed(trades),
-                     session_day, market_status(now))
+                     session_day, market_status(now), issues)
     (SITE / "index.html").write_text(page_html, encoding="utf-8")
     print(f"dashboard written: {SITE / 'index.html'}")
 
@@ -492,7 +494,7 @@ footer p { max-width:760px; }
 """
 
 
-def page(now, launch, tiles, cards, data, summary, n_today, n_total, feed, session_day, is_open):
+def page(now, launch, tiles, cards, data, summary, n_today, n_total, feed, session_day, is_open, issues):
     session_title = ("Today" if session_day == now.date() else
                      f"Most recent session: {session_day:%B} {session_day.day}" if session_day else "Today")
     session_body = ('<div class="chart"><canvas id="chart-session" aria-label="Change in value through the session"></canvas></div>'
@@ -515,6 +517,7 @@ this page rebuilds itself from the live accounts and the bots' decision logs.</p
 <nav class="links"><a href="reports/research.html">Research and backtests</a><a href="{REPO}">Source code</a></nav>
 <div class="status"><span class="live{' open' if is_open else ''}"><i></i><b>{'Market open' if is_open else 'Market closed'}</b></span>
 <span><b>{n_today}</b> trades today</span><span><b>{n_total}</b> trades since {since_text}</span>
+<span>{f'<a href="{REPO}/tree/main/logs"><b>{issues}</b> logged problem{"s" if issues != 1 else ""} today</a>' if issues else 'No problems logged today'}</span>
 <span>Updated {now:%B} {now.day} at {now.strftime("%I:%M %p").lstrip("0")} ET</span></div>
 </header>
 

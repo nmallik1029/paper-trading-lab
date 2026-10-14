@@ -6,6 +6,7 @@ returns from the underlying index for longer backtests (leverage x the index's d
 return, minus the extra borrowing cost and fees). Where the real fund exists, the real
 prices are used.
 """
+import time
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,11 @@ def load_daily(tickers=DAILY, name="v2", refresh=False, start="1999-01-01", keep
     path = DATA / f"daily_{name}{'_live' if keep_today else ''}.csv"
     if refresh or not path.exists():
         try:
-            raw = yf.download(tickers, start=start, auto_adjust=True, progress=False)
+            for attempt in range(3):  # Yahoo sometimes fails once and works on the next try
+                raw = yf.download(tickers, start=start, auto_adjust=True, progress=False)
+                if not raw.empty:
+                    break
+                time.sleep(10)
             if raw.empty:
                 raise RuntimeError("Yahoo Finance returned no data")
             now = pd.Timestamp.now(tz="America/New_York")

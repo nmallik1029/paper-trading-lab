@@ -19,7 +19,8 @@ from intraday_data import TZ, load_bars, panels
 from research_multi import load
 
 
-def main(day):
+def main(day, morning_start="09:20"):
+    """morning_start: when the morning session starts; later simulates a restart."""
     day = pd.Timestamp(day)
     clock = {"now": pd.Timestamp(f"{day.date()} 09:20", tz=TZ)}
     live.now_et = lambda: clock["now"]
@@ -29,7 +30,7 @@ def main(day):
     shutil.rmtree(test_logs, ignore_errors=True)
     live.LOGS = test_logs
     for session in ("morning", "afternoon"):
-        clock["now"] = pd.Timestamp(f"{day.date()} {'09:20' if session == 'morning' else '13:07'}", tz=TZ)
+        clock["now"] = pd.Timestamp(f"{day.date()} {morning_start if session == 'morning' else '13:07'}", tz=TZ)
         live.daytrader(session, dry_run=True)
 
     rows = [json.loads(line) for line in (test_logs / "safe.jsonl").read_text().splitlines()]
@@ -64,4 +65,4 @@ def main(day):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "2026-10-08")
+    main(sys.argv[1] if len(sys.argv) > 1 else "2026-10-08", *sys.argv[2:3])
