@@ -5,3 +5,5 @@ data/
 logs_dryrun/
 site/
 .claude/
+logs_rehearsal/
+logs_preview/

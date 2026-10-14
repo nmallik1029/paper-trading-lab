@@ -1,24 +1,27 @@
 # Paper Trading Lab
 
-Three strategies, each with $1,000 of fake money in its own Alpaca paper account, trade
-automatically. Dashboard: https://nmallik1029.github.io/paper-trading-lab/
+Three algorithmic strategies, each with $1,000 of fake money in its own Alpaca paper account,
+trade automatically. Dashboard: https://nmallik1029.github.io/paper-trading-lab/
 
-## Live now (lab v2, since Oct 13, 2026)
+## Live now (lab v2.1, from Oct 14, 2026)
 
 | Strategy | Account (.env prefix) | What it does | Runs (New York time) |
 |---|---|---|---|
-| Breakout day trader | `ALPACA_` | Buys TQQQ (3x long) when QQQ breaks above its normal range for that time of day, SQQQ (3x short) when it breaks below; trailing stop at the band or VWAP; out by the close | decisions every 30 min, 10:00–15:30 |
-| Multi-strategy fund | `MODERATE_` | Five sleeves, 20% each: Bitcoin trend, short volatility, overnight TQQQ, RSI(2) dip buying, vol-targeted 3x trend | rebalances 15:40; sells the overnight TQQQ at 9:30 |
-| Learning allocator | `SAFE_` | The same five sleeves; the Hedge online-learning algorithm sets each one's share, starting from equal trust on launch day | same as the fund |
+| QQQ breakout trader | `ALPACA_` | Buys TQQQ (3x long) when QQQ breaks above its normal range for that time of day, SQQQ (3x short) when it breaks below; trailing stop at the band or VWAP; out by the close | checks every 30 min, 10:00–15:30 |
+| Staggered breakout portfolio | `SAFE_` | The same rule on QQQ, the S&P 500 and semiconductors (TQQQ/SQQQ, UPRO/SPXU, SOXL/SOXS), each on three half-hour clocks offset by 10 minutes: nine slices, ~16 trades a day | checks every 10 min, 10:00–15:50 |
+| Learning allocator | `MODERATE_` | Five daily sleeves (Bitcoin trend, short volatility, overnight TQQQ, RSI(2) dip buying, vol-targeted 3x trend); the Hedge online-learning algorithm sets each one's share | rebalances 15:40; sells the overnight TQQQ at 9:30 |
 
 `report/v2_research.html` explains what was researched and tested, and why these three won.
+(The equal-weight multi-strategy fund ran Oct 13 only; it was retired because it held the same
+sleeves as the learner.)
 
 ```
-.venv\Scripts\python run_v2_report.py               # rebuild the v2 research report + dashboard data
+.venv\Scripts\python run_v2_report.py               # rebuild the research report + dashboard data
 .venv\Scripts\python research_v2.py                 # score the daily sleeves (development periods)
-.venv\Scripts\python live.py daily --dry-run        # what the two daily accounts would trade now
-.venv\Scripts\python live.py daytrader --replay 2026-10-08   # rerun a past day vs the backtest
-.venv\Scripts\python live.py flatten daytrader      # emergency: sell everything in one account
+.venv\Scripts\python research_staggered.py          # score the staggered breakout portfolio
+.venv\Scripts\python rehearse.py 2026-10-08         # run a past day through the live code vs the backtest
+.venv\Scripts\python live.py daily --dry-run        # what the learning allocator would trade now
+.venv\Scripts\python live.py flatten safe           # emergency: sell everything in one account
 .venv\Scripts\python dashboard.py                   # build site/index.html locally
 ```
 
@@ -32,12 +35,13 @@ late, so only the dashboard keeps one, as a harmless backup.)
 
 | cron-job.org alarm (weekdays) | Workflow | Does |
 |---|---|---|
-| 9:20 | `daytrader.yml`, session morning | unwind the overnight TQQQ at the open, then day-trade until 13:00 |
-| 13:05 | `daytrader.yml`, session afternoon | day-trade 13:30–15:30, rebalance the fund and the learner at 15:40, sell the day trader out at 15:57 |
+| 9:20 | `daytrader.yml`, session morning | unwind the learner's overnight TQQQ at the open; both day traders until 13:10 |
+| 13:05 | `daytrader.yml`, session afternoon | both day traders from 13:20; the learner's rebalance at 15:40; everything sold at 15:57 |
 | 15:40 | `monthly.yml` ("Daily rebalance") | backup only: waits for the afternoon run, then skips the already-logged rebalance |
-| :50 past each hour 10–16 | `dashboard.yml` | rebuild the dashboard; sell the day trader's position if its session died |
+| :50 past each hour 10–16 | `dashboard.yml` | rebuild the dashboard; sell the day traders' positions if their session died |
 
-Every decision is logged to `logs/<account>.jsonl` and committed.
+The trading job also asks for a dashboard rebuild every 30 minutes. Every decision is logged
+to `logs/<account>.jsonl`; the staggered slices' open positions are in `logs/safe_slices.json`.
 
 ## Research rules
 
@@ -66,7 +70,9 @@ Kept for the record; each has its own report in `report/`.
 | `universe.py` | Daily data for leveraged/inverse ETFs, volatility products, crypto; synthetic 3x history |
 | `sleeves.py` | The v2 daily strategies, each returning daily returns and today's decision |
 | `research_v2.py` | Scores the daily sleeves; logs every variant |
-| `intraday_v2.py` | Noise-area breakout and opening-range breakout on 5-minute bars |
+| `intraday_v2.py` | Intraday strategies on 5-minute bars: noise-area breakout (single, multi-market, staggered), opening-range breakout, VWAP scalers |
+| `research_multi.py`, `research_staggered.py` | Score the multi-market and staggered breakout portfolios |
+| `rehearse.py` | Runs a past day through the live day-trading code with a fake clock, vs the backtest |
 | `allocators.py` | Equal weight, risk parity, and the Hedge learning allocator |
 | `run_v2_report.py` | The v2 research report and the dashboard's backtest data |
 | `live.py` | Live trading: daily rebalances, overnight unwind, the day trader, safety close-outs |

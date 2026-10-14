@@ -1,8 +1,8 @@
 """Live paper trading on Alpaca (lab v2), using exactly the backtested rules.
 
-    python live.py daily [--dry-run]           # 15:40: multi-strategy fund + learning allocator
-    python live.py unwind [--dry-run]          # 9:30: sell the overnight TQQQ the daily accounts hold
-    python live.py daytrader --session morning|afternoon [--dry-run]   # breakout day trader
+    python live.py daily [--dry-run]           # 15:40: the learning allocator's rebalance
+    python live.py unwind [--dry-run]          # 9:30: sell its overnight TQQQ at the open
+    python live.py daytrader --session morning|afternoon [--dry-run]   # both breakout day traders
     python live.py daytrader --replay 2026-10-09     # rerun a past day with live data, no orders
     python live.py flatten daytrader|moderate|safe   # emergency: sell everything
     python live.py safety                      # sell the day trader's position if its session died
@@ -235,8 +235,7 @@ def daily(dry_run):
         return
     signals = T.iloc[-1]
     _, learned = learner_budgets(R, rf)
-    plans = {"moderate": (al.equal_weight(R).iloc[-1], "equal weight"),
-             "safe": (learned, "learned (Hedge)")}
+    plans = {"moderate": (learned, "learned (Hedge)")}  # the learning allocator's account
     for account, (budgets, how) in plans.items():
         if logged_today(account, ("rebalanced",)):
             print(f"[{account}] already rebalanced today")
@@ -261,7 +260,7 @@ def unwind(dry_run):
         return
     if not dry_run:
         sleep_until(plan[0] + pd.Timedelta(seconds=30))
-    for account in ("moderate", "safe"):
+    for account in ("moderate",):
         if logged_today(account, ("unwound",)):
             continue
         rebs = [r for r in read_log(account) if r.get("action") == "rebalanced" and "day_tqqq" in r]
@@ -297,98 +296,222 @@ def recent_bars(start, end, symbols=("QQQ",), feed=DataFeed.SIP):
     return session_only(bars)
 
 
-def nam_state(history, at):
-    """(price, upper band, lower band, VWAP) for the decision at `at`: the bands come from
-    full-market history through yesterday plus today's live (IEX) bars finished by `at`.
-    All NaN if today's bars haven't arrived, which makes the rule hold its position."""
-    today = recent_bars(at.normalize(), at, feed=DataFeed.IEX)
+# The QQQ breakout trader (day-trader account): all-in on one market, half-hour clock.
+QQQ_MARKET = {"QQQ": (LONG_FUND, SHORT_FUND, 3.0)}
+# The staggered breakout portfolio ("safe" account): three markets, each on three half-hour
+# clocks offset by 10 minutes, nine equal slices. Offsets are in 5-minute bars.
+STAGGER_MARKETS = {"QQQ": ("TQQQ", "SQQQ", 3.0), "SPY": ("UPRO", "SPXU", 3.0), "SMH": ("SOXL", "SOXS", 3.0)}
+STAGGER_OFFSETS = (0, 2, 4)
+DAY_ACCOUNTS = ("daytrader", "safe")
+DAY_SYMBOLS = sorted(STAGGER_MARKETS)
+
+
+def nam_states(history, at, symbols=DAY_SYMBOLS):
+    """{market: (price, upper band, lower band, VWAP)} for the decision at `at`. Bands come
+    from full-market history through yesterday plus today's live (IEX) bars finished by
+    `at`. All NaN for a market whose bars haven't arrived, which makes the rule hold."""
+    blank = {m: (np.nan,) * 4 for m in symbols}
+    today = recent_bars(at.normalize(), at, symbols=symbols, feed=DataFeed.IEX)
     if today.empty:
-        return (np.nan,) * 4
+        return blank
     today = today[today["timestamp"] < at]
-    pan = panels(pd.concat([history, today], ignore_index=True))["QQQ"]
-    if pan["close"].index[-1] != pd.Timestamp(at.date()):
-        return (np.nan,) * 4
-    b = iv.noise_bands(pan)
+    pans = panels(pd.concat([history, today], ignore_index=True))
     k = (at.hour * 60 + at.minute - (9 * 60 + 30)) // 5  # the decision's bar; use the one before
-    return tuple(float(b[f][-1, k - 1]) for f in ("C", "upper", "lower", "vwap"))
+    out = dict(blank)
+    for m in symbols:
+        if m in pans and pans[m]["close"].index[-1] == pd.Timestamp(at.date()):
+            b = iv.noise_bands(pans[m])
+            out[m] = tuple(float(b[f][-1, k - 1]) for f in ("C", "upper", "lower", "vwap"))
+    return out
 
 
-def fund_position(client):
-    """+1 holding TQQQ, -1 holding SQQQ, 0 in cash. Anything else gets sold first."""
+def nam_state(history, at):
+    """QQQ's (price, upper, lower, VWAP) at `at` (used by the replay)."""
+    return nam_states(history, at, symbols=["QQQ"])["QQQ"]
+
+
+def day_marks(opens, close):
+    """Every 10-minute decision mark of the day, with its clock offset: (time, offset).
+    Matches the backtest: bar k = 6, 8, 10, ... up to the day's last bar."""
+    last = int((close - opens).total_seconds() // 300) - 1
+    return [(opens + pd.Timedelta(minutes=5 * k), (k - 6) % 6) for k in range(6, last + 1, 2)]
+
+
+def clock_name(offset):
+    return f":{offset * 5:02d}/:{30 + offset * 5:02d}"
+
+
+def slices_file():
+    """Each staggered slice's open position, so its exits sell only its own shares."""
+    return LOGS / "safe_slices.json"
+
+
+def load_slices(today):
+    if slices_file().exists():
+        st = json.loads(slices_file().read_text(encoding="utf-8"))
+        if st.get("date") == str(today):
+            return st
+    return {"date": str(today), "budget": None, "slices": {}}
+
+
+def save_slices(st):
+    LOGS.mkdir(exist_ok=True)
+    slices_file().write_text(json.dumps(st, indent=1), encoding="utf-8")
+
+
+def sell_shares(client, account, symbol, qty, dry_run, why):
+    """Sell `qty` shares of `symbol` (all of them if that's about what's held)."""
+    if dry_run:
+        return trade(client, account, symbol, "sell", dollars=0.0, dry_run=True, why=why)
+    held = float(client.get_open_position(symbol).qty)
+    if qty >= held * 0.999:
+        return trade(client, account, symbol, "sell", everything=True, why=why)
+    order = client.submit_order(MarketOrderRequest(symbol=symbol, qty=round(qty, 9), side=OrderSide.SELL,
+                                                   time_in_force=TimeInForce.DAY))
+    fill = wait_filled(client, order)
+    q, price = float(fill.filled_qty), float(fill.filled_avg_price)
+    log(account, action="sell", symbol=symbol, qty=q, price=price, dollars=round(q * price, 2), why=why)
+    return fill
+
+
+def qqq_decision(client, states, t, dry_run):
+    """The QQQ breakout trader at a half-hour mark: all-in TQQQ, SQQQ or cash."""
+    why = f"{t:%H:%M} decision"
     held = holdings(client)
     for sym in list(held):
         if sym not in (LONG_FUND, SHORT_FUND):
-            trade(client, "daytrader", sym, "sell", everything=True, why="not part of this strategy")
+            trade(client, "daytrader", sym, "sell", everything=True, dry_run=dry_run, why="not part of this strategy")
             held.pop(sym)
-    if not held:
-        return 0
-    return 1 if max(held, key=held.get) == LONG_FUND else -1
+    pos = (1 if LONG_FUND in held else -1 if SHORT_FUND in held else 0) if not dry_run else 0
+    names = {1: LONG_FUND, -1: SHORT_FUND, 0: "cash"}
+    price, upper, lower, vwap = states["QQQ"]
+    want = iv.nam_decide(pos, price, upper, lower, vwap)
+    if want != pos:
+        if pos:
+            trade(client, "daytrader", names[pos], "sell", everything=True, dry_run=dry_run, why=why)
+        if want:
+            cash = float(client.get_account().buying_power) * (1 - CASH_BUFFER)
+            trade(client, "daytrader", names[want], "buy", cash, dry_run=dry_run, why=why)
+    log("daytrader", action="decision", decision=t.strftime("%H:%M"), strategy="noise-area",
+        qqq=round(price, 2), upper=round(upper, 2), lower=round(lower, 2), vwap=round(vwap, 2),
+        before=names[pos], after=names[want], dry_run=dry_run)
+
+
+def stagger_decision(client, st, states, t, offset, dry_run):
+    """The staggered portfolio at one 10-minute mark: the three slices on this mark's clock
+    each apply the breakout rule with their own budget and their own shares."""
+    why = f"{t:%H:%M} decision ({clock_name(offset)} clock)"
+    if st["budget"] is None:
+        st["budget"] = float(client.get_account().equity) * (1 - CASH_BUFFER) / (len(STAGGER_MARKETS) * len(STAGGER_OFFSETS))
+    detail = {}
+    for m, (lf, sf, _) in STAGGER_MARKETS.items():
+        key = f"{m} {clock_name(offset)}"
+        cur = st["slices"].get(key, {"side": 0})
+        want = iv.nam_decide(cur["side"], *states[m])
+        names = {1: lf, -1: sf, 0: "cash"}
+        if want != cur["side"]:
+            if cur["side"]:
+                sell_shares(client, "safe", cur["fund"], cur["qty"], dry_run, why)
+                st["slices"][key] = {"side": 0}
+            if want:
+                cash = float(client.get_account().buying_power) * (1 - CASH_BUFFER)
+                dollars = min(st["budget"], cash)
+                if dollars >= MIN_ORDER:
+                    fill = trade(client, "safe", names[want], "buy", dollars, dry_run=dry_run, why=why)
+                    qty = float(fill.filled_qty) if fill is not None else 0.0
+                    st["slices"][key] = {"side": want, "fund": names[want], "qty": qty}
+        detail[m] = {"price": round(states[m][0], 2), "upper": round(states[m][1], 2),
+                     "lower": round(states[m][2], 2), "vwap": round(states[m][3], 2),
+                     "before": names[cur["side"]], "after": names[st["slices"].get(key, {"side": 0})["side"]]}
+    save_slices(st)
+    log("safe", action="decision", decision=t.strftime("%H:%M"), strategy="staggered-breakout",
+        clock=clock_name(offset), markets=detail, dry_run=dry_run)
+
+
+def refresh_dashboard():
+    """On GitHub Actions, ask for a dashboard rebuild so the site shows trades within minutes."""
+    if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GH_TOKEN"):
+        subprocess.run(["gh", "workflow", "run", "dashboard.yml"], check=False)
 
 
 def daytrader(session, dry_run):
-    client = trading_client("daytrader")
+    """Run both day-trading accounts through one half of the day, as a timeline of events:
+    10-minute decision marks, the learning allocator's 15:40 rebalance, and the close-out."""
+    clients = {a: trading_client(a) for a in DAY_ACCOUNTS}
     today = now_et().date()
     plan = schedule(today)
     if plan is None:
         print("market is closed today")
         return
-    opens, times, close = plan
+    opens, _, close = plan
     noon = pd.Timestamp(today, tz=TZ) + AFTERNOON
-    mine = [t for t in times if (t < noon) == (session == "morning")
-            and not logged_today("daytrader", ("decision", "skipped"), decision=t.strftime("%H:%M"))]
     close_out = close - CLOSE_OUT
-    i_close = (close_out < noon) == (session == "morning") and not logged_today("daytrader", ("day closed",))
-    if not mine and not i_close:
+    rebalance_at = close - REBALANCE_BEFORE_CLOSE
+    mine = lambda t: (t < noon) == (session == "morning")  # noqa: E731
+    events = [(t, "mark", o) for t, o in day_marks(opens, close) if mine(t)
+              and not logged_today("safe", ("decision", "skipped"), decision=t.strftime("%H:%M"))]
+    if mine(close_out) and not logged_today("daytrader", ("day closed",)):
+        events += [(rebalance_at, "rebalance", None), (close_out, "close", None)]
+    events.sort(key=lambda e: e[0])
+    if not events:
         print(f"nothing left to do in the {session} session today")
         return
-    history = recent_bars(pd.Timestamp(today) - pd.Timedelta(days=45), pd.Timestamp(today))
+    history = recent_bars(pd.Timestamp(today) - pd.Timedelta(days=45), pd.Timestamp(today), symbols=DAY_SYMBOLS)
+    st = load_slices(today)
 
-    if session == "morning" and now_et() < times[0]:
+    if session == "morning" and now_et() < events[0][0]:
         sleep_until(opens + pd.Timedelta(minutes=1))
-        if holdings(client):  # every day starts flat, as in the backtest
+        for account, client in clients.items():  # every day starts flat, as in the backtest
             for sym in holdings(client):
-                trade(client, "daytrader", sym, "sell", everything=True, dry_run=dry_run,
+                trade(client, account, sym, "sell", everything=True, dry_run=dry_run,
                       why="leftover position from a previous day")
+        st = {"date": str(today), "budget": None, "slices": {}}
+        save_slices(st)
 
-    names = {1: LONG_FUND, -1: SHORT_FUND, 0: "cash"}
-    for t in mine:
-        if now_et() > t + LATE:
-            log("daytrader", action="skipped", decision=t.strftime("%H:%M"), why="run started late")
-            continue
-        sleep_until(t + pd.Timedelta(seconds=15))  # let the bar that ended at t publish
-        why = f"{t:%H:%M} decision"
-        try:
-            price, upper, lower, vwap = nam_state(history, t)
-            pos = fund_position(client) if not dry_run else 0
-            want = iv.nam_decide(pos, price, upper, lower, vwap)
-            if want != pos:
-                if pos:
-                    trade(client, "daytrader", names[pos], "sell", everything=True, dry_run=dry_run, why=why)
-                if want:
-                    cash = float(client.get_account().buying_power) * (1 - CASH_BUFFER)
-                    trade(client, "daytrader", names[want], "buy", cash, dry_run=dry_run, why=why)
-            log("daytrader", action="decision", decision=t.strftime("%H:%M"), strategy="noise-area",
-                qqq=round(price, 2), upper=round(upper, 2), lower=round(lower, 2), vwap=round(vwap, 2),
-                before=names[pos], after=names[want], dry_run=dry_run)
-        except Exception as e:  # keep going: the next decision re-reads the real position
-            log("daytrader", action="error", decision=t.strftime("%H:%M"), error=str(e)[:300])
-        persist(f"daytrader: {t:%H:%M} decision")
-
-    if i_close:
-        # The run that closes out the day also does the daily accounts' rebalance 20 minutes
-        # before the close, so it doesn't depend on a separate alarm firing.
-        sleep_until(close - REBALANCE_BEFORE_CLOSE)
-        try:
-            daily(dry_run)
-        except Exception as e:  # never let it get in the way of the close-out
-            log("moderate", action="error", error=f"daily rebalance failed: {str(e)[:300]}")
-            persist("daily rebalance failed")
-        sleep_until(close_out)
-        for sym in holdings(client):
-            trade(client, "daytrader", sym, "sell", everything=True, dry_run=dry_run,
-                  why="end of day: never hold overnight")
-        log("daytrader", action="day closed", equity=float(client.get_account().equity))
-        persist("daytrader: end of day")
+    for t, kind, offset in events:
+        if kind == "mark":
+            if now_et() > t + LATE:
+                log("safe", action="skipped", decision=t.strftime("%H:%M"), why="run started late")
+                if offset == 0:
+                    log("daytrader", action="skipped", decision=t.strftime("%H:%M"), why="run started late")
+                continue
+            sleep_until(t + pd.Timedelta(seconds=15))  # let the bars that ended at t publish
+            try:
+                states = nam_states(history, t)
+            except Exception as e:
+                log("safe", action="error", decision=t.strftime("%H:%M"), error=f"prices: {str(e)[:300]}")
+                continue
+            if offset == 0:
+                try:
+                    qqq_decision(clients["daytrader"], states, t, dry_run)
+                except Exception as e:  # keep going: the next decision re-reads the real position
+                    log("daytrader", action="error", decision=t.strftime("%H:%M"), error=str(e)[:300])
+            try:
+                stagger_decision(clients["safe"], st, states, t, offset, dry_run)
+            except Exception as e:
+                log("safe", action="error", decision=t.strftime("%H:%M"), error=str(e)[:300])
+                save_slices(st)
+            persist(f"day traders: {t:%H:%M} decision")
+            if offset == 0:  # every 30 minutes (GitHub Pages limits rebuilds per hour)
+                refresh_dashboard()
+        elif kind == "rebalance":
+            # The learning allocator rebalances here, so it doesn't depend on a separate alarm.
+            sleep_until(t)
+            try:
+                daily(dry_run)
+            except Exception as e:  # never let it get in the way of the close-out
+                log("moderate", action="error", error=f"daily rebalance failed: {str(e)[:300]}")
+                persist("daily rebalance failed")
+        else:
+            sleep_until(t)
+            for account, client in clients.items():
+                for sym in holdings(client):
+                    trade(client, account, sym, "sell", everything=True, dry_run=dry_run,
+                          why="end of day: never hold overnight")
+                log(account, action="day closed", equity=float(client.get_account().equity))
+            save_slices({"date": str(today), "budget": None, "slices": {}})
+            persist("day traders: end of day")
+            refresh_dashboard()
 
 
 def replay(day):
@@ -430,11 +553,12 @@ def safety():
         return
     if logged_today("daytrader", ("decision", "skipped"), decision=times[-1].strftime("%H:%M")):
         return  # the session is alive and will close out itself
-    client = trading_client("daytrader")
-    for sym in holdings(client):
-        trade(client, "daytrader", sym, "sell", everything=True, why="safety net: session missing")
-    log("daytrader", action="day closed", equity=float(client.get_account().equity))
-    persist("daytrader: safety close-out")
+    for account in DAY_ACCOUNTS:
+        client = trading_client(account)
+        for sym in holdings(client):
+            trade(client, account, sym, "sell", everything=True, why="safety net: session missing")
+        log(account, action="day closed", equity=float(client.get_account().equity))
+    persist("day traders: safety close-out")
 
 
 def main():

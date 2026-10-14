@@ -17,6 +17,8 @@ import pandas as pd
 import allocators as al
 import intraday_v2 as iv
 import research_v2 as rv
+from research_multi import load as load_multi
+from research_staggered import staggered
 from backtest import Result
 from intraday_data import load_bars, panels
 from metrics import return_stats
@@ -89,6 +91,36 @@ def main():
                      "Max drawdown (holdout)": sh["Max drawdown"], "_default": name == "Noise-area breakout, 3x"})
     intraday_table = pd.DataFrame(rows)
 
+    # v2.1: the live QQQ trader and the staggered portfolio, with costs from current fund
+    # prices (split-adjusted history distorts them), plus the activity experiments.
+    _, _, funds, pans = load_multi()
+    funds = pd.concat([funds, d["close"][["TQQQ", "SQQQ"]]], axis=1)
+    pans = {**pans, **pan}
+    q = iv.breakout_sleeve(pans["QQQ"], funds["TQQQ"], funds["SQQQ"], 3.0)
+    qqq_trader = (1 + q["ret"]) * (1 + rf.reindex(q.index).fillna(0.0)) - 1
+    stag, _ = staggered(pans, funds, rf)
+    activity = {
+        "QQQ breakout, 30-min checks (live)": (qqq_trader, q["trades"]),
+        "Staggered breakout portfolio (live)": (stag["ret"], stag["trades"]),
+        "QQQ breakout, 5-min checks": "v21_breakout_every1_allin", "QQQ breakout, 5-min checks, scaled": "v21_breakout_every1_scaled",
+        "VWAP follow, 3x, 5-min": "v21_momentum_3x", "VWAP fade, 3x, 5-min": "v21_reversion_3x",
+        "VWAP follow, QQQ 1x, 5-min": "v21_momentum_1x-long", "VWAP fade, QQQ 1x, 5-min": "v21_reversion_1x-long",
+        "Breakout on 6 other markets, 30-min": "v21_multi_every6", "Breakout on 6 other markets, 15-min": "v21_multi_every3",
+    }
+    rows = []
+    for name, src in activity.items():
+        if isinstance(src, str):
+            df = pd.read_csv(OUT / f"{src}_daily.csv", index_col=0, parse_dates=True)
+            ret, trades = df["ret"], df["trades"]
+        else:
+            ret, trades = src
+        sd, sh = return_stats(ret.loc["2017":"2022"], rf), return_stats(ret.loc["2023":], rf)
+        rows.append({"Strategy": name, "Trades / day": trades.loc["2017":].mean(), "CAGR (dev)": sd["CAGR"],
+                     "Sharpe (dev)": sd["Sharpe"], "CAGR (holdout)": sh["CAGR"] if "live" in name or "markets" in name else np.nan,
+                     "Sharpe (holdout)": sh["Sharpe"] if "live" in name or "markets" in name else np.nan,
+                     "_default": "live" in name})
+    activity_table = pd.DataFrame(rows)
+
     R = pd.DataFrame({k: built[k][0]["ret"] for k in FUND_SLEEVES}).loc["2011-10-01":]
     costs = {"Crypto trend (BTC)": 30e-4}
     fund = al.combine(R, al.equal_weight(R), rf, costs)
@@ -105,7 +137,7 @@ def main():
     alloc_table = pd.DataFrame(rows)
 
     finalists = {"fund": fund.loc["2012-07":], "learner": learner.loc["2012-07":],
-                 "daytrader": intraday["Noise-area breakout, 3x"]["ret"].loc["2016-02":]}
+                 "daytrader": qqq_trader.loc["2016-02":], "staggered": stag["ret"].loc["2016-02":]}
     for k, ret in finalists.items():
         ret.rename("ret").to_csv(OUT / f"v2_{k}_daily_returns.csv")
     n = len(pd.read_csv(Path(__file__).parent / "experiments.csv"))
@@ -114,6 +146,8 @@ def main():
         "learner": {"dev": stats(learner.loc["2012-07":"2017"], rf), "holdout": stats(learner.loc["2018":], rf)},
         "daytrader": {"dev": stats(finalists["daytrader"].loc["2017":"2022"], rf),
                       "holdout": stats(finalists["daytrader"].loc["2023":], rf)},
+        "staggered": {"dev": stats(finalists["staggered"].loc["2017":"2022"], rf),
+                      "holdout": stats(finalists["staggered"].loc["2023":], rf)},
         "spy": {"dev": stats(spy_r.loc["2012-07":"2017"], rf), "holdout": stats(spy_r.loc["2018":], rf)}}}
     (OUT / "v2_summary.json").write_text(json.dumps(summary, indent=1, default=float))
 
@@ -121,9 +155,9 @@ def main():
         r = r.dropna()
         return Result(r, pd.DataFrame({"x": 1.0}, r.index), pd.Series(0.0, r.index), pd.Series(0, r.index))
     start = "2017-01-03"
-    charted = {"Buy & hold SPY": res(spy_r.loc[start:]), "Multi-strategy fund": res(fund.loc[start:]),
-               "Learning allocator": res(learner.loc[start:]),
-               "Breakout day trader": res(finalists["daytrader"].loc[start:])}
+    charted = {"Buy & hold SPY": res(spy_r.loc[start:]), "QQQ breakout trader": res(finalists["daytrader"].loc[start:]),
+               "Staggered breakout": res(finalists["staggered"].loc[start:]),
+               "Learning allocator": res(learner.loc[start:])}
     growth = _save(growth_chart(charted, _colors(list(charted), "Buy & hold SPY"), 0,
                                title="Growth of $100 since 2017 (log scale, after each strategy's costs)"),
                    OUT / "v2_growth.png")
@@ -136,18 +170,28 @@ periods were used to pick; each holdout (daily strategies 2018–today, intraday
 looked at once, after the picks were made. {n} variants have been tried in this lab, so passing
 the strict scorecard now needs t ≥ {t_needed(n):.2f}. Nothing does; that is normal.</p>
 
-<section><h2>The live lineup</h2><ul>
-<li><b>Breakout day trader</b> (day-trader account): QQQ's "noise area" is the range it usually
+<section><h2>The live lineup (v2.1, from Oct 14, 2026)</h2><ul>
+<li><b>QQQ breakout trader</b> (day-trader account): QQQ's "noise area" is the range it usually
 moves from the open by each time of day. A break out of it at a half-hour mark means real buying
 or selling pressure: buy TQQQ (3x long) on an upside break, SQQQ (3x short) on a downside break.
 Trail a stop at the band or VWAP, sell everything by the close.</li>
-<li><b>Multi-strategy fund</b> (moderate account): five unrelated strategies, 20% of the money each,
-rebalanced daily at 3:40 PM: Bitcoin trend, short volatility, overnight TQQQ, RSI(2) dip buying,
-and volatility-targeted 3x trend.</li>
-<li><b>Learning allocator</b> (safe account): the same five strategies, but the Hedge online-learning
-algorithm decides each one's share, starting from equal trust on Oct 13, 2026 and moving money
-toward whatever has been working (with a 5% floor each and slow forgetting).</li>
+<li><b>Staggered breakout portfolio</b> (second account): the same rule on QQQ, the S&amp;P 500 and
+semiconductors, each run on three half-hour clocks offset by 10 minutes (:00/:30, :10/:40,
+:20/:50). Nine independent slices, about 16 trades a day spread across the hour.</li>
+<li><b>Learning allocator</b> (third account): five unrelated daily strategies (Bitcoin trend, short
+volatility, overnight TQQQ, RSI(2) dip buying, vol-targeted 3x trend). The Hedge online-learning
+algorithm decides each one's share, starting from equal trust and moving money toward whatever has
+been working (5% floor each, slow forgetting).</li>
 </ul></section>
+
+<section><h2>Making it trade more often (v2.1)</h2>
+<p class="note">Goal: several trades an hour without giving up the edge. Trading more often on one
+market only added costs: checking every 5 minutes turned the breakout from +26%/yr into a loss, and
+every 5-minute VWAP strategy lost money after costs. Adding more markets didn't help either: the
+breakout works on the big index and tech funds but not on small caps, Treasuries, banks or energy.
+What worked was keeping the 30-minute rhythm and staggering it across three clocks and the three
+markets where the edge showed up. Bold rows are live.</p>
+{_table(activity_table, show_index=False)}</section>
 
 <section><img alt="Growth of $100 for the three live strategies and SPY since 2017" src="data:image/png;base64,{growth}"></section>
 

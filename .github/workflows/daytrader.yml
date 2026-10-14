@@ -19,12 +19,14 @@ concurrency:
 
 permissions:
   contents: write  # to commit the decision logs
+  actions: write   # to ask for a dashboard rebuild after each decision
 
 jobs:
   trade:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
+      GH_TOKEN: ${{ github.token }}
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       MODERATE_API_KEY: ${{ secrets.MODERATE_API_KEY }}
