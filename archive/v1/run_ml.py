@@ -1,14 +1,18 @@
 """Walk-forward ML sector strategies, judged on the scorecard.
 
-    .venv\\Scripts\\python run_ml.py           # development period only (2003-2017)
-    .venv\\Scripts\\python run_ml.py --final   # the one-time test on 2018-today
+    .venv\\Scripts\\python archive\\v1\\run_ml.py           # development period only (2003-2017)
+    .venv\\Scripts\\python archive\\v1\\run_ml.py --final   # the one-time test on 2018-today
 
 Design everything on the development period. The holdout stays locked until the design
 is final: every look at it followed by a tweak turns it into more training data.
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # shared modules live at the repo root
+
 import argparse
 from datetime import date
-from pathlib import Path
 
 import pandas as pd
 

@@ -37,7 +37,7 @@ LAUNCH_V2 = pd.Timestamp("2026-10-13")  # v2 started; the learning allocator sta
 CASH_BUFFER = 0.005   # leave 0.5% in cash so a small price move can't make a buy fail
 MIN_ORDER = 1.0       # Alpaca's smallest dollar order
 SMALL_TRADE = 0.02    # skip rebalancing trades under 2% of the account (entries and exits still happen)
-LATE = pd.Timedelta(minutes=5)       # skip a day-trader decision if we reach it later than this
+LATE = pd.Timedelta(minutes=5)       # skip a decision that is reached later than this
 AFTERNOON = pd.Timedelta(hours=13, minutes=15)  # decisions from 13:15 belong to the afternoon run
 CLOSE_OUT = pd.Timedelta(minutes=3)  # the day trader sells everything this long before the close
 REBALANCE_BEFORE_CLOSE = pd.Timedelta(minutes=20)  # the daily accounts rebalance at 15:40

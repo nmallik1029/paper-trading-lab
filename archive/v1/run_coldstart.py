@@ -1,14 +1,18 @@
 """Backtest the learn-from-scratch day trader: how fast does it learn, and what's normal?
 
-    .venv\\Scripts\\python run_coldstart.py
+    .venv\\Scripts\\python archive\\v1\\run_coldstart.py
 
 1. One continuous run that starts from scratch at the start of the development period
    (January 2017) and keeps learning through 2022: this is what gets scored.
 2. Sixty fresh starts, one at the beginning of every month from 2017 to 2021, each
    followed for a year: the learning curve, and the normal range the dashboard shows.
 """
-import json
+import sys
 from pathlib import Path
+
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # shared modules live at the repo root
+
+import json
 
 import numpy as np
 import pandas as pd

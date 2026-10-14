@@ -1,4 +1,4 @@
-"""Rebuild the lab v2 research report and the files the dashboard reads.
+"""Rebuild the research write-up and the backtest files the dashboard reads.
 
     .venv\\Scripts\\python run_v2_report.py
 
@@ -156,75 +156,133 @@ def main():
         return Result(r, pd.DataFrame({"x": 1.0}, r.index), pd.Series(0.0, r.index), pd.Series(0, r.index))
     start = "2017-01-03"
     charted = {"Buy & hold SPY": res(spy_r.loc[start:]), "QQQ breakout trader": res(finalists["daytrader"].loc[start:]),
-               "Staggered breakout": res(finalists["staggered"].loc[start:]),
+               "Staggered breakout portfolio": res(finalists["staggered"].loc[start:]),
                "Learning allocator": res(learner.loc[start:])}
     growth = _save(growth_chart(charted, _colors(list(charted), "Buy & hold SPY"), 0,
-                               title="Growth of $100 since 2017 (log scale, after each strategy's costs)"),
+                               title="Growth of $100 since 2017 (log scale, after trading costs)"),
                    OUT / "v2_growth.png")
+
+    labels = {"Dev years": "Design years", "CAGR (dev)": "Design: return", "Sharpe (dev)": "Design: Sharpe",
+              "Max drawdown (dev)": "Design: worst drop", "CAGR (holdout)": "Unseen: return",
+              "Sharpe (holdout)": "Unseen: Sharpe", "Max drawdown (holdout)": "Unseen: worst drop",
+              "Trades / day": "Trades a day"}
+    live = pd.DataFrame([
+        {"Strategy": name, "CAGR (dev)": f["dev"]["cagr"], "Sharpe (dev)": f["dev"]["sharpe"],
+         "Max drawdown (dev)": f["dev"]["max_drawdown"], "CAGR (holdout)": f["holdout"]["cagr"],
+         "Sharpe (holdout)": f["holdout"]["sharpe"], "Max drawdown (holdout)": f["holdout"]["max_drawdown"],
+         "_default": key != "spy"}
+        for key, name in [("daytrader", "QQQ breakout trader"), ("staggered", "Staggered breakout portfolio"),
+                          ("learner", "Learning allocator"), ("spy", "S&P 500 (SPY), for comparison")]
+        for f in [summary["finalists"][key]]])
+    periods = (f"The intraday strategies were designed on 2017–2022 and tested on 2023 onward; the learning "
+               f"allocator was designed on 2012–2017 and tested on 2018 onward. The S&amp;P 500 row uses the "
+               f"learning allocator's periods.")
 
     sources = "".join(f'<li><a href="{u}">{html.escape(t)}</a></li>' for t, u in SOURCES)
     body = f"""
-<h1>Lab v2: the research</h1>
-<p class="meta">What I read, what I tested, and why these three strategies are live. Development
-periods were used to pick; each holdout (daily strategies 2018–today, intraday 2023–today) was
-looked at once, after the picks were made. {n} variants have been tried in this lab, so passing
-the strict scorecard now needs t ≥ {t_needed(n):.2f}. Nothing does; that is normal.</p>
+<h1>Research and backtests</h1>
+<p class="meta">How the three live strategies were chosen: the ideas that were tested, how each one was
+evaluated, what the results were, and the risks that come with the strategies that made the cut.</p>
 
-<section><h2>The live lineup (v2.1, from Oct 14, 2026)</h2><ul>
-<li><b>QQQ breakout trader</b> (day-trader account): QQQ's "noise area" is the range it usually
-moves from the open by each time of day. A break out of it at a half-hour mark means real buying
-or selling pressure: buy TQQQ (3x long) on an upside break, SQQQ (3x short) on a downside break.
-Trail a stop at the band or VWAP, sell everything by the close.</li>
-<li><b>Staggered breakout portfolio</b> (second account): the same rule on QQQ, the S&amp;P 500 and
-semiconductors, each run on three half-hour clocks offset by 10 minutes (:00/:30, :10/:40,
-:20/:50). Nine independent slices, about 16 trades a day spread across the hour.</li>
-<li><b>Learning allocator</b> (third account): five unrelated daily strategies (Bitcoin trend, short
-volatility, overnight TQQQ, RSI(2) dip buying, vol-targeted 3x trend). The Hedge online-learning
-algorithm decides each one's share, starting from equal trust and moving money toward whatever has
-been working (5% floor each, slow forgetting).</li>
-</ul></section>
-
-<section><h2>Making it trade more often (v2.1)</h2>
-<p class="note">Goal: several trades an hour without giving up the edge. Trading more often on one
-market only added costs: checking every 5 minutes turned the breakout from +26%/yr into a loss, and
-every 5-minute VWAP strategy lost money after costs. Adding more markets didn't help either: the
-breakout works on the big index and tech funds but not on small caps, Treasuries, banks or energy.
-What worked was keeping the 30-minute rhythm and staggering it across three clocks and the three
-markets where the edge showed up. Bold rows are live.</p>
-{_table(activity_table, show_index=False)}</section>
+<section><h2>Summary</h2>
+<p>{n} strategy variants were built and tested on historical data with trading costs included. Each
+was designed using one stretch of history and then evaluated once on later years it had never seen.
+Three are live: two intraday breakout strategies based on Zarattini, Aziz and Barbon (2024), and a
+daily portfolio of five strategies whose weights are set by an online-learning algorithm. None of the
+{n} variants clears the significance bar once it is adjusted for the number of attempts
+(t ≥ {t_needed(n):.2f}), so the results below are encouraging evidence rather than proof.</p>
+{_table(live, show_index=False, labels=labels)}
+<p class="note">Returns are per year. "Design" is the period the strategy was built on and "unseen" is the later period it was tested on once. {periods}</p></section>
 
 <section><img alt="Growth of $100 for the three live strategies and SPY since 2017" src="data:image/png;base64,{growth}"></section>
 
-<section><h2>Daily strategies tested</h2>
-<p class="note">Bold = in the fund. Each used its published or practitioner default settings,
-leveraged with 3x funds where the idea is about stocks. Costs: 3 bp per trade for ETFs, 0.30% for
-crypto (Alpaca's fee plus spread).</p>{_table(daily_table, show_index=False)}</section>
+<section><h2>How the strategies were tested</h2>
+<p><b>Data.</b> Daily prices come from Yahoo Finance, and five-minute bars come from Alpaca's
+consolidated market feed starting in 2016. Leveraged funds are rebuilt from their underlying index for
+the years before they launched, which lets the daily tests start in 2003.</p>
+<p><b>Costs.</b> Daily trades in exchange-traded funds pay 3 basis points each. Intraday trades in
+leveraged funds pay half of a one-cent bid-ask spread at each fund's current price plus 0.5 basis points
+of slippage, with a minimum of 1.5 basis points. Bitcoin trades pay 0.30%, which covers Alpaca's fee and
+the spread.</p>
+<p><b>Design and evaluation periods.</b> Every design decision was made on the earlier period. The later
+period was looked at once, after the choices were final, so it gives an honest read on how the strategy
+handles data it was not tuned to.</p>
+<p><b>Significance.</b> Every variant is recorded, including the ones that failed. The t-statistic
+needed to pass uses a Šidák correction: the more variants have been tried, the higher the bar, because
+the best of many attempts can look good by luck alone.</p>
+<p><b>Checking the live code.</b> Past trading days were replayed through the live trading code on a
+simulated clock and compared with the backtest. More than 99% of decisions matched; the few that did not
+were ties decided by a few cents of difference between the two price feeds.</p></section>
 
-<section><h2>Intraday strategies tested</h2>
-<p class="note">Signals on QQQ; trades in TQQQ/SQQQ, paying half of each fund's one-cent spread plus
-0.5 bp per trade. Development 2017–2022, holdout 2023–today. The opening-range breakout looks great
-in its paper but, as independent replications also found, not after realistic costs.</p>
-{_table(intraday_table, show_index=False)}</section>
+<section><h2>The live strategies</h2>
+<p><b>QQQ breakout trader.</b> QQQ usually stays within a predictable distance of its opening price, and
+how far it strays depends on the time of day. The strategy measures that distance as the average move
+from the open to each time of day over the past 14 days, widened when the market gaps overnight. At each
+half-hour mark, a price above the range buys TQQQ and a price below it buys SQQQ. The position is closed
+when the price crosses back through the range or the day's volume-weighted average price, and
+everything is sold before the close.</p>
+<p><b>Staggered breakout portfolio.</b> The same rule runs on the Nasdaq-100, the S&amp;P 500 and the
+semiconductor index, each with its own pair of 3x funds. Every market runs on three half-hour clocks
+offset by ten minutes, which makes nine independent slices of the account. The result trades about 16
+times a day without checking any single slice more often than every 30 minutes.</p>
+<p><b>Learning allocator.</b> Five daily strategies share the account: Bitcoin trend-following, short
+volatility that steps aside when the VIX futures curve inverts, TQQQ held overnight during uptrends,
+TQQQ bought after sharp two-day drops, and a TQQQ trend position sized to its recent volatility. The
+Hedge algorithm, a multiplicative-weights method from online learning, scores each strategy daily by its
+return relative to its volatility and shifts money toward the ones doing well. It keeps at least 5% in
+each and slowly forgets old results, so it can adapt when conditions change.</p></section>
 
-<section><h2>Combining the five sleeves</h2>
-<p class="note">Development July 2012–2017, holdout 2018–today. The sleeves are barely related
-(crypto is uncorrelated with the rest), so combining them cuts risk sharply.</p>
-{_table(alloc_table, show_index=False)}</section>
+<section><h2>Intraday strategies</h2>
+<p>Both published intraday strategies were rebuilt with signals on QQQ and trades in TQQQ and SQQQ. The
+volatility-band breakout held up after costs. The opening-range breakout, which looks strong in its
+paper, did not, matching what independent replications have found.</p>
+{_table(intraday_table, show_index=False, labels=labels)}
+<p>The next question was how to trade more often without losing the edge. Checking the breakout every
+five minutes instead of every thirty turned a profitable strategy into a losing one, and every
+five-minute strategy built around the volume-weighted average price lost money once costs were
+counted. Running the breakout on six other markets roughly broke even, because the edge shows up in the
+large index and technology funds but not in small caps, Treasuries, banks or energy. Keeping the
+30-minute rhythm and staggering it across three clocks and the three markets where the edge appeared
+kept most of the returns while multiplying the number of trades.</p>
+{_table(activity_table, show_index=False, labels=labels)}
+<p class="note">Bold rows are live. The out-of-sample columns are only filled in for the candidates that
+were evaluated on 2023 onward.</p></section>
 
-<section><h2>What I read</h2><ul>{sources}</ul>
-<p class="note">Common thread in the research: most published edges shrink after publication and
-after realistic costs, so everything here was re-tested on our own data with costs, and the
-holdouts are the honest guide to expectations.</p></section>
+<section><h2>Daily strategies</h2>
+<p>Seven daily strategies were tested with the default settings from the research or trading practice
+they came from, using 3x funds where the idea concerns stocks. Five went into the learning allocator;
+the turn-of-the-month effect was left out because it was the weakest during the design period, and the
+plain overnight strategy was replaced by the version that only holds in uptrends.</p>
+{_table(daily_table, show_index=False, labels=labels)}
+<p>The five strategies are only loosely related to each other, and Bitcoin trend-following is close to
+uncorrelated with the rest, so combining them reduces risk considerably. The table compares three ways
+of splitting the money between them.</p>
+{_table(alloc_table, show_index=False, labels={**labels, "Allocator": "Weighting"})}
+<p class="note">Bold rows were run live. The equal-weight version ran for one day before it was retired,
+because it held the same strategies as the learning allocator.</p></section>
 
-<section><h2>Risks to know</h2><ul>
-<li>Short volatility can lose most of its value in days (February 2018: -34% for this sleeve in a
-year; the fund it belongs to was -23% that year).</li>
-<li>Crypto trend had a -60% drawdown in the holdout.</li>
-<li>The day trader holds 3x funds; a bad day can cost 5–10%.</li>
-<li>All backtests ignore taxes. Fake money only.</li>
-</ul></section>"""
+<section><h2>Risks</h2><ul>
+<li>Short volatility can lose a large share of its value within days. In February 2018 this strategy
+fell 34% for the year, and the combined portfolio was down 23% that year.</li>
+<li>Bitcoin trend-following went through a 60% drawdown during the out-of-sample years.</li>
+<li>The intraday strategies hold 3x leveraged funds, so a single bad day can cost 5% to 10% of an
+account.</li>
+<li>None of the backtests account for taxes. The accounts hold simulated money only.</li>
+</ul></section>
+
+<section><h2>Earlier experiments</h2>
+<p>Before these strategies, the project tested simpler rules and machine-learning models: sector
+momentum and trend following, ridge regression and gradient-boosted models that ranked sectors each
+month, an intraday model that predicted the next 30 minutes, and a version of that model that learned
+from scratch. None of them beat holding the S&amp;P 500 by a meaningful margin after costs, which is
+what led to the research behind the current strategies. The original reports are kept for reference:
+<a href="v1/report.html">baseline strategies</a>, <a href="v1/ml_dev.html">monthly machine learning</a>,
+<a href="v1/daytrader_dev.html">intraday machine learning</a> and
+<a href="v1/coldstart_dev.html">learning from scratch</a>.</p></section>
+
+<section><h2>Sources</h2><ul>{sources}</ul></section>"""
     path = OUT / "v2_research.html"
-    path.write_text(_page("Lab v2 Research", body), encoding="utf-8")
+    path.write_text(_page("Research and Backtests · Paper Trading Lab", body, home="../index.html"), encoding="utf-8")
     print(json.dumps(summary["finalists"], indent=1, default=lambda v: round(v, 3)))
     print(f"Report: {path}")
 

@@ -20,7 +20,8 @@ SHORT = {"Buy & hold SPY": "SPY", "Equal-weight sectors": "Equal-weight",
          "Sector momentum": "Momentum", "Trend following": "Trend",
          "Day trader (ridge)": "DT ridge", "Day trader (gbm)": "DT gbm",
          "SPY, daytime only": "SPY daytime", "Day trader, from scratch": "From scratch",
-         "Day trader, full history": "Full history"}
+         "Day trader, full history": "Full history", "QQQ breakout trader": "QQQ breakout",
+         "Staggered breakout portfolio": "Staggered", "Learning allocator": "Learner"}
 
 plt.rcParams.update({
     "font.family": ["Segoe UI", "DejaVu Sans"],
@@ -197,11 +198,13 @@ def _fmt(col, v):
     return html.escape(str(v))
 
 
-def _table(df, show_index=True, fmt=_fmt, cell_bg=None):
+def _table(df, show_index=True, fmt=_fmt, cell_bg=None, labels=None):
     """Render a DataFrame. Columns starting with '_' are hidden; a truthy '_default'
-    column bolds that row."""
+    column bolds that row. `labels` renames column headers for display."""
     cols = [c for c in df.columns if not str(c).startswith("_")]
-    head = ("<th></th>" if show_index else "") + "".join(f"<th>{html.escape(str(c))}</th>" for c in cols)
+    labels = labels or {}
+    head = ("<th></th>" if show_index else "") + "".join(
+        f"<th>{html.escape(str(labels.get(c, c)))}</th>" for c in cols)
     rows = []
     for idx, row in df.iterrows():
         cls = ' class="em"' if row.get("_default", False) else ""
@@ -225,37 +228,50 @@ def _pct(col, v):
     return "—" if pd.isna(v) else f"{v:.1%}"
 
 
-def _page(title, body):
+REPORT_CSS = """
+:root { color-scheme: light; --page:#f7f7f5; --surface:#ffffff; --ink:#111110; --ink-2:#4f4e4a;
+  --muted:#85837d; --grid:#e6e5df; --line:#e2e1db; --link:#2a78d6; --good:#0a7a0a; --bad:#c23434; }
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; --page:#0f0f0e; --surface:#1a1a19;
+  --ink:#f4f4f2; --ink-2:#c3c2b7; --muted:#8f8d86; --grid:#2c2c2a; --line:#2f2f2c; --link:#5598e7;
+  --good:#3dbb3d; --bad:#e66767; } img { background:#fcfcfb; border-radius:8px; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--page); color:var(--ink);
+  font:15px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width:960px; margin:0 auto; padding:40px 20px 72px; }
+a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+.home { display:inline-block; margin-bottom:20px; font-size:14px; font-weight:600; }
+h1 { font-size:28px; line-height:1.25; margin:0 0 12px; letter-spacing:-.01em; }
+h2 { font-size:18px; line-height:1.35; margin:0 0 10px; }
+p { margin:0 0 12px; }
+.meta { color:var(--ink-2); font-size:16px; max-width:760px; }
+.note { color:var(--ink-2); font-size:14px; margin:10px 0 14px; }
+section { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:24px; margin:18px 0; }
+section > p, section li { color:var(--ink-2); }
+ul { margin:0; padding-left:20px; } li { margin:6px 0; }
+.scroll { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:13.5px; font-variant-numeric:tabular-nums; margin:4px 0; }
+th, td { padding:7px 10px; text-align:right; border-bottom:1px solid var(--grid); white-space:nowrap; }
+th:first-child, td:first-child { text-align:left; padding-left:0; }
+th:last-child, td:last-child { padding-right:0; }
+thead th { color:var(--muted); font-weight:600; font-size:12.5px; }
+tbody th { font-weight:500; }
+tr.em td { font-weight:650; }
+.pass { color:var(--good); font-weight:650; } .fail { color:var(--bad); font-weight:650; }
+img { width:100%; height:auto; display:block; }
+@media (max-width: 760px) { main { padding:28px 16px 56px; } section { padding:18px; } h1 { font-size:24px; } }
+"""
+
+
+def _page(title, body, home=None):
+    """A standalone report page. `home`: link back to the dashboard, relative to the page."""
+    back = f'<a class="home" href="{home}">← Paper Trading Lab</a>\n' if home else ""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
-<style>
-  :root {{ color-scheme: light; --surface:#fcfcfb; --page:#f9f9f7; --ink:#0b0b0b;
-          --ink-2:#52514e; --line:#e1e0d9; --good:#006300; --bad:#d03b3b; }}
-  body {{ margin:0; background:var(--page); color:var(--ink);
-          font:14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }}
-  main {{ max-width:980px; margin:0 auto; padding:32px 16px 64px; }}
-  section {{ background:var(--surface); border:1px solid rgba(11,11,11,.08); border-radius:10px;
-             padding:20px; margin:16px 0; }}
-  h1 {{ font-size:24px; margin:0 0 6px; }}
-  h2 {{ font-size:16px; margin:0 0 8px; }}
-  .meta, .note {{ color:var(--ink-2); }}
-  .note {{ margin:8px 0 12px; }}
-  .scroll {{ overflow-x:auto; }}
-  table {{ border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }}
-  th, td {{ padding:6px 10px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }}
-  th:first-child, td:first-child {{ text-align:left; }}
-  thead th {{ color:var(--ink-2); font-weight:600; font-size:12px; }}
-  tbody th {{ font-weight:500; }}
-  tr.em td {{ font-weight:700; }}
-  .pass {{ color:var(--good); font-weight:700; }}
-  .fail {{ color:var(--bad); font-weight:700; }}
-  img {{ width:100%; height:auto; display:block; }}
-  li {{ margin:4px 0; }}
-</style></head>
+<style>{REPORT_CSS}</style></head>
 <body><main>
-{body}
+{back}{body}
 </main></body></html>
 """
 

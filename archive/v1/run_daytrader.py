@@ -1,14 +1,18 @@
 """Backtest the ML day trader and judge it on the scorecard.
 
-    .venv\\Scripts\\python run_daytrader.py           # development period (2017-2022)
-    .venv\\Scripts\\python run_daytrader.py --final   # the one-time test on 2023-today
+    .venv\\Scripts\\python archive\\v1\\run_daytrader.py           # development period (2017-2022)
+    .venv\\Scripts\\python archive\\v1\\run_daytrader.py --final   # the one-time test on 2023-today
 
 Design everything on the development period; the holdout stays locked until the
 design is final.
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # shared modules live at the repo root
+
 import argparse
 from datetime import date
-from pathlib import Path
 
 import numpy as np
 import pandas as pd

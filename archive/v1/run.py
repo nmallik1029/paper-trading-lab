@@ -1,10 +1,14 @@
 """Backtest the baseline strategies and write report/report.html.
 
-    .venv\\Scripts\\python run.py            # uses cached prices in data/
-    .venv\\Scripts\\python run.py --refresh  # re-downloads from Yahoo Finance
+    .venv\\Scripts\\python archive\\v1\\run.py            # uses cached prices in data/
+    .venv\\Scripts\\python archive\\v1\\run.py --refresh  # re-downloads from Yahoo Finance
 """
-import argparse
+import sys
 from pathlib import Path
+
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # shared modules live at the repo root
+
+import argparse
 
 import pandas as pd
 
