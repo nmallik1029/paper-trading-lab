@@ -136,7 +136,7 @@ def wait_filled(client, order, timeout=90):
     raise TimeoutError(f"order for {order.symbol} not filled after {timeout}s")
 
 
-def trade(client, account, symbol, side, dollars=None, everything=False, dry_run=False, why=""):
+def trade(client, account, symbol, side, dollars=None, everything=False, dry_run=False, why="", timeout=90):
     """Buy or sell by dollar amount, or sell the whole position. Returns the fill."""
     if dry_run:
         log(account, action=f"would {side}", symbol=symbol,
@@ -149,11 +149,21 @@ def trade(client, account, symbol, side, dollars=None, everything=False, dry_run
             symbol=symbol, notional=round(dollars, 2),
             time_in_force=TimeInForce.GTC if is_crypto(symbol) else TimeInForce.DAY,
             side=OrderSide.BUY if side == "buy" else OrderSide.SELL))
-    fill = wait_filled(client, order)
+    fill = wait_filled(client, order, timeout)
     qty, price = float(fill.filled_qty), float(fill.filled_avg_price)
     log(account, action=side, symbol=symbol, qty=qty, price=price,
         dollars=round(qty * price, 2), why=why)
     return fill
+
+
+def sell_all(client, account, dry_run, why, timeout=90):
+    """Sell every position, logging (not raising) any order that fails or is slow to fill,
+    so one stuck order can't stop the rest of a run."""
+    for sym in holdings(client):
+        try:
+            trade(client, account, sym, "sell", everything=True, dry_run=dry_run, why=why, timeout=timeout)
+        except Exception as e:
+            log(account, action="error", symbol=sym, error=str(e)[:300], why=why)
 
 
 def rebalance(client, account, target, dry_run, why):
@@ -182,6 +192,13 @@ def rebalance(client, account, target, dry_run, why):
     for s, value in want.items():
         gap = value - held.get(s, 0.0)
         if gap > small or (s not in held and gap >= MIN_ORDER):
+            if is_crypto(s) and not dry_run:
+                # Alpaca only buys crypto with settled cash; sale proceeds settle the next day.
+                settled = float(client.get_account().non_marginable_buying_power) * (1 - CASH_BUFFER)
+                if settled < MIN_ORDER:
+                    log(account, action="note", symbol=s, why="waiting for settled cash to buy crypto")
+                    continue
+                gap = min(gap, settled)
             attempt(s, "buy", gap)
     return errors
 
@@ -462,9 +479,7 @@ def daytrader(session, dry_run):
     if session == "morning" and now_et() < events[0][0]:
         sleep_until(opens + pd.Timedelta(minutes=1))
         for account, client in clients.items():  # every day starts flat, as in the backtest
-            for sym in holdings(client):
-                trade(client, account, sym, "sell", everything=True, dry_run=dry_run,
-                      why="leftover position from a previous day")
+            sell_all(client, account, dry_run, why="leftover position from a previous day", timeout=300)
         st = {"date": str(today), "budget": None, "slices": {}}
         save_slices(st)
 
@@ -505,9 +520,7 @@ def daytrader(session, dry_run):
         else:
             sleep_until(t)
             for account, client in clients.items():
-                for sym in holdings(client):
-                    trade(client, account, sym, "sell", everything=True, dry_run=dry_run,
-                          why="end of day: never hold overnight")
+                sell_all(client, account, dry_run, why="end of day: never hold overnight")
                 log(account, action="day closed", equity=float(client.get_account().equity))
             save_slices({"date": str(today), "budget": None, "slices": {}})
             persist("day traders: end of day")
@@ -555,8 +568,7 @@ def safety():
         return  # the session is alive and will close out itself
     for account in DAY_ACCOUNTS:
         client = trading_client(account)
-        for sym in holdings(client):
-            trade(client, account, sym, "sell", everything=True, why="safety net: session missing")
+        sell_all(client, account, dry_run=False, why="safety net: session missing")
         log(account, action="day closed", equity=float(client.get_account().equity))
     persist("day traders: safety close-out")
 
